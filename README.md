@@ -42,19 +42,29 @@ or
 pip3 install -r requirements.txt
 ```
 
-### 4. Apply migrations
+### 4. Configure environment variables
+
+Create a `.env` file in the project root by copying the sample below:
+
+```env
+SECRET_KEY="django-insecure-your-secret-key-here"
+```
+
+> **Note:** Never commit your real `.env` file to version control. Add it to `.gitignore`.
+
+### 5. Apply migrations
 
 ```bash
 python manage.py migrate
 ```
 
-### 5. Create a superuser (for Django Admin access)
+### 6. Create a superuser (for Django Admin access)
 
 ```bash
 python manage.py createsuperuser
 ```
 
-### 6. Run the development server
+### 7. Run the development server
 
 ```bash
 python manage.py runserver
