@@ -17,7 +17,7 @@ Django 4.2 web application implementing the domain model for the Cithara AI Musi
 
 ```bash
 git clone https://github.com/TTKTako/SoftwareDesign-Ex3.git
-cd Exercise3
+cd SoftwareDesign-Ex3
 ```
 
 ### 2. Create and activate a virtual environment
@@ -78,7 +78,7 @@ The admin interface is available at **http://127.0.0.1:8000/admin/**
 ## Project Structure
 
 ```
-Exercise3/
+SoftwareDesign-Ex3/
 ├── config/                 # Django project configuration
 │   ├── settings.py
 │   ├── urls.py
@@ -87,7 +87,15 @@ Exercise3/
 ├── music/                  # Core domain application
 │   ├── migrations/
 │   │   └── 0001_initial.py
-│   ├── models.py           # Domain models
+│   ├── models/             # Domain models (one file per entity)
+│   │   ├── __init__.py
+│   │   ├── user.py
+│   │   ├── library.py
+│   │   ├── song.py
+│   │   ├── metadata.py
+│   │   ├── voice_style.py
+│   │   ├── lyrics.py
+│   │   └── shared_link.py
 │   ├── admin.py            # Django Admin CRUD registrations
 │   ├── views.py            # Simple JSON views
 │   └── urls.py             # URL patterns
@@ -99,7 +107,8 @@ Exercise3/
 
 ## Domain Models
 
-Implemented directly from the domain diagram:
+Adapted from the Exercise 2 domain diagram with implementation-driven refinements
+(see [Domain Model Changes from Exercise 2](#domain-model-changes-from-exercise-2) below):
 
 | Model | Description | Key Constraints |
 |---|---|---|
@@ -113,7 +122,28 @@ Implemented directly from the domain diagram:
 
 > **Not persisted as models:**  
 > `AudioPlayer` — pure UI component, no persistent state.  
-> `AIGenerationAPI` — external third-party service; integration tracked via `Song.status` field.
+> `AIGenerationAPI` — external third-party service; interaction tracked via `Song.status`.
+
+---
+
+## Domain Model Changes from Exercise 2
+
+The following diagram reflects the **implemented** model. Differences from the Exercise 2 submission are explained in the table below.
+
+![domain diagram](https://github.com/TTKTako/SoftwareDesign-Ex3/diagram.png)
+
+### Change Log vs Exercise 2
+
+| # | Exercise 2 Entity | Change | Justification |
+|---|---|---|---|
+| 1 | `AuthenticatedUser` / `Guest` (two subtypes of `User`) | Merged into a single `User` model | Django's built-in session framework already distinguishes authenticated vs. unauthenticated requests at the view layer via `request.user.is_authenticated`. A separate `Guest` DB row has no persistent attributes and would be empty; an inheritance table adds schema complexity with zero benefit. |
+| 2 | `AudioPlayer` | Removed from DB layer | `AudioPlayer` is a front-end UI component (HTML5 `<audio>` element). It holds no data that needs to be persisted — playback position, volume, etc. are ephemeral browser state. |
+| 3 | `AIGenerationAPI` | Removed from DB layer | The AI service is an external third-party API. It has no persistent attributes of its own in our schema. Its interaction is represented by the `Song.status` lifecycle (`PENDING → GENERATING → COMPLETED / FAILED`), which gives the UI all the feedback described in FR-2.6 and FR-2.7. |
+| 4 | `Song` (no status) | Added `status` field (`TextChoices`: PENDING, GENERATING, COMPLETED, FAILED) | Required to implement background generation (FR-2.7), visual loading feedback (FR-2.6), and to filter the library view to show only completed songs (FR-3.3). |
+| 5 | `Song` (no file) | Added `audio_file` (FileField) and `created_at` (DateTime) | `audio_file` stores the path to the generated audio on disk, required for playback (FR-4.x) and download (FR-5.1). `created_at` is needed for the library listing which displays creation date (FR-3.3). |
+| 6 | `Metadata` (generic attributes) | Made `mood` and `occasion` concrete `TextChoices` enums | FR-2.2 lists specific valid values for mood and occasion. Using enums enforces data integrity at the DB level and drives the UI drop-downs deterministically. |
+| 7 | `Lyrics` (implicit) | Added explicit `mode` (`TextChoices`: CUSTOM, AI_GENERATED, INSTRUMENTAL) and `content` | FR-2.4 and FR-2.5 require distinguishing between user-provided, AI-generated, and instrumental songs. The original diagram named the class but did not specify how these three cases were differentiated. |
+| 8 | `VoiceStyle` (generic) | Added `style` as `TextChoices` (MALE, FEMALE, ROBOTIC, DUET) | FR-2.3 defines exactly four voice options. Enumerating them in code prevents invalid values and drives UI selection. |
 
 ---
 
@@ -146,11 +176,9 @@ All seven domain models are registered with search, filter, and inline editing.
 
 ---
 
-## CRUD Functionality (Test)
+## CRUD Functionality
 
-> TA(s) Read this for The Submission
-
-### How to Run (for TA)
+### How to Run
 
 ```bash
 # From the project root (with venv activated):

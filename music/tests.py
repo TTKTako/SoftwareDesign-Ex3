@@ -31,18 +31,18 @@ def make_library(user):
     return Library.objects.create(owner=user)
 
 
-def make_song(library, status=Song.STATUS_COMPLETED):
+def make_song(library, status=Song.Status.COMPLETED):
     return Song.objects.create(library=library, status=status)
 
 
-def make_full_song(library, title="My Song", status=Song.STATUS_COMPLETED):
+def make_full_song(library, title="My Song", status=Song.Status.COMPLETED):
     """Create a Song with all three composed entities attached."""
     song = Song.objects.create(library=library, status=status)
     Metadata.objects.create(
         song=song, title=title, mood="happy", theme="adventure", occasion="general"
     )
-    VoiceStyle.objects.create(song=song, style=VoiceStyle.STYLE_MALE)
-    Lyrics.objects.create(song=song, mode=Lyrics.MODE_AI_GENERATED, content="")
+    VoiceStyle.objects.create(song=song, style=VoiceStyle.Style.MALE)
+    Lyrics.objects.create(song=song, mode=Lyrics.Mode.AI_GENERATED, content="")
     return song
 
 
@@ -222,10 +222,7 @@ class VoiceStyleModelTests(TestCase):
         """
         user = make_user()
         lib = make_library(user)
-        for style in [
-            VoiceStyle.STYLE_MALE, VoiceStyle.STYLE_FEMALE,
-            VoiceStyle.STYLE_ROBOTIC, VoiceStyle.STYLE_DUET,
-        ]:
+        for style in VoiceStyle.Style:
             song = make_song(lib)
             vs = VoiceStyle.objects.create(song=song, style=style)
             self.assertEqual(vs.style, style)
@@ -248,9 +245,9 @@ class LyricsModelTests(TestCase):
         lib = make_library(user)
         song = make_song(lib)
         lyrics = Lyrics.objects.create(
-            song=song, mode=Lyrics.MODE_CUSTOM, content="La la la"
+            song=song, mode=Lyrics.Mode.CUSTOM, content="La la la"
         )
-        self.assertEqual(lyrics.mode, Lyrics.MODE_CUSTOM)
+        self.assertEqual(lyrics.mode, Lyrics.Mode.CUSTOM)
         self.assertEqual(lyrics.content, "La la la")
 
     def test_instrumental_lyrics_empty_content(self):
@@ -262,9 +259,9 @@ class LyricsModelTests(TestCase):
         lib = make_library(user)
         song = make_song(lib)
         lyrics = Lyrics.objects.create(
-            song=song, mode=Lyrics.MODE_INSTRUMENTAL, content=""
+            song=song, mode=Lyrics.Mode.INSTRUMENTAL, content=""
         )
-        self.assertEqual(lyrics.mode, Lyrics.MODE_INSTRUMENTAL)
+        self.assertEqual(lyrics.mode, Lyrics.Mode.INSTRUMENTAL)
         self.assertEqual(lyrics.content, "")
 
     def test_ai_generated_lyrics_default(self):
@@ -276,7 +273,7 @@ class LyricsModelTests(TestCase):
         lib = make_library(user)
         song = make_song(lib)
         lyrics = Lyrics.objects.create(song=song)
-        self.assertEqual(lyrics.mode, Lyrics.MODE_AI_GENERATED)
+        self.assertEqual(lyrics.mode, Lyrics.Mode.AI_GENERATED)
 
 
 # ===========================================================================
@@ -343,8 +340,8 @@ class CRUDOperationsTests(TestCase):
             "metadata", "voice_style", "lyrics"
         ).get(pk=song.pk)
         self.assertEqual(fetched.metadata.title, "CRUD Test Song")
-        self.assertEqual(fetched.voice_style.style, VoiceStyle.STYLE_MALE)
-        self.assertEqual(fetched.lyrics.mode, Lyrics.MODE_AI_GENERATED)
+        self.assertEqual(fetched.voice_style.style, VoiceStyle.Style.MALE)
+        self.assertEqual(fetched.lyrics.mode, Lyrics.Mode.AI_GENERATED)
 
     def test_update_song_metadata(self):
         """
@@ -424,8 +421,8 @@ class LibraryViewTests(TestCase):
         """
         user = make_user()
         lib = make_library(user)
-        completed = make_full_song(lib, title="Done Song", status=Song.STATUS_COMPLETED)
-        make_full_song(lib, title="Pending Song", status=Song.STATUS_PENDING)
+        completed = make_full_song(lib, title="Done Song", status=Song.Status.COMPLETED)
+        make_full_song(lib, title="Pending Song", status=Song.Status.PENDING)
         self.client.login(username="testuser", password="testpass123")
         response = self.client.get(reverse("music:library"))
         data = response.json()

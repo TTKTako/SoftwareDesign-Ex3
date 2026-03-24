@@ -13,7 +13,7 @@ from .models import Library, SharedLink, Song
 def library_view(request):
     """Return the authenticated user's library and song list as JSON."""
     library, _ = Library.objects.get_or_create(owner=request.user)
-    songs = library.songs.filter(status=Song.STATUS_COMPLETED).select_related("metadata")
+    songs = library.songs.filter(status=Song.Status.COMPLETED).select_related("metadata")
     data = {
         "owner": request.user.username,
         "song_count": songs.count(),
