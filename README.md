@@ -130,7 +130,7 @@ Adapted from the Exercise 2 domain diagram with implementation-driven refinement
 
 The following diagram reflects the **implemented** model. Differences from the Exercise 2 submission are explained in the table below.
 
-![domain diagram](https://github.com/TTKTako/SoftwareDesign-Ex3/diagram.png)
+![domain diagram](https://github.com/TTKTako/SoftwareDesign-Ex3/blob/main/diagram.png)
 
 ### Change Log vs Exercise 2
 
