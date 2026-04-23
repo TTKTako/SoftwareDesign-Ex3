@@ -32,6 +32,19 @@ DEBUG = True
 
 ALLOWED_HOSTS = []
 
+# ---------------------------------------------------------------------------
+# Song generation strategy (Exercise 4 — Strategy Pattern)
+# ---------------------------------------------------------------------------
+# Set GENERATOR_STRATEGY in your .env file:
+#   mock  — offline, no API key required (default)
+#   suno  — live Suno API (requires SUNO_API_KEY)
+GENERATOR_STRATEGY = os.getenv("GENERATOR_STRATEGY", "mock")
+
+# Suno API key — only needed when GENERATOR_STRATEGY=suno.
+# Obtain yours from https://sunoapi.org/api-key
+# NEVER commit the real key; keep it in .env (which is git-ignored).
+SUNO_API_KEY = os.getenv("SUNO_API_KEY", "")
+
 
 # Application definition
 

@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 
-from .models import Library, Lyrics, Metadata, SharedLink, Song, User, VoiceStyle
+from .models import GenerationJob, Library, Lyrics, Metadata, SharedLink, Song, User, VoiceStyle
 
 
 @admin.register(User)
@@ -91,3 +91,15 @@ class SharedLinkAdmin(admin.ModelAdmin):
     list_display = ("song", "created_by", "token", "created_at")
     search_fields = ("song__metadata__title", "created_by__username")
     readonly_fields = ("token", "created_at")
+
+
+# ---------------------------------------------------------------------------
+# GenerationJob admin
+# ---------------------------------------------------------------------------
+
+@admin.register(GenerationJob)
+class GenerationJobAdmin(admin.ModelAdmin):
+    list_display = ("song", "strategy", "status", "task_id", "created_at", "updated_at")
+    list_filter = ("strategy", "status")
+    search_fields = ("task_id", "song__metadata__title")
+    readonly_fields = ("task_id", "strategy", "created_at", "updated_at")

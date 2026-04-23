@@ -1,6 +1,7 @@
 # Cithara AI Music Generator — Django Backend
 
-Django 4.2 web application implementing the domain model for the Cithara AI Music Generator.
+Django 4.2 web application for the Cithara AI Music Generator.
+Implements the domain model (Exercise 3) and the Strategy Pattern for pluggable song generation (Exercise 4).
 
 ---
 
@@ -37,20 +38,26 @@ source venv/bin/activate
 ```bash
 pip install -r requirements.txt
 ```
-or
-```bash
-pip3 install -r requirements.txt
-```
 
 ### 4. Configure environment variables
 
-Create a `.env` file in the project root by copying the sample below:
+Copy `.env.example` to `.env` and fill in your values:
+
+```bash
+cp .env.example .env
+```
 
 ```env
 SECRET_KEY="django-insecure-your-secret-key-here"
+
+# Generation strategy: mock (default, offline) | suno (live API)
+GENERATOR_STRATEGY=mock
+
+# Required only when GENERATOR_STRATEGY=suno
+SUNO_API_KEY=
 ```
 
-> **Note:** Never commit your real `.env` file to version control. Add it to `.gitignore`.
+> **Never commit `.env` to version control.** It is git-ignored. Use `.env.example` as the committed template.
 
 ### 5. Apply migrations
 
@@ -79,15 +86,16 @@ The admin interface is available at **http://127.0.0.1:8000/admin/**
 
 ```
 SoftwareDesign-Ex3/
-├── config/                 # Django project configuration
-│   ├── settings.py
+├── config/                     # Django project configuration
+│   ├── settings.py             # GENERATOR_STRATEGY + SUNO_API_KEY read here
 │   ├── urls.py
 │   ├── asgi.py
 │   └── wsgi.py
-├── music/                  # Core domain application
+├── music/                      # Core domain application
 │   ├── migrations/
-│   │   └── 0001_initial.py
-│   ├── models/             # Domain models (one file per entity)
+│   │   ├── 0001_initial.py
+│   │   └── 0002_generationjob.py
+│   ├── models/                 # Domain models (one file per entity)
 │   │   ├── __init__.py
 │   │   ├── user.py
 │   │   ├── library.py
@@ -95,12 +103,20 @@ SoftwareDesign-Ex3/
 │   │   ├── metadata.py
 │   │   ├── voice_style.py
 │   │   ├── lyrics.py
-│   │   └── shared_link.py
-│   ├── admin.py            # Django Admin CRUD registrations
-│   ├── views.py            # Simple JSON views
-│   └── urls.py             # URL patterns
+│   │   ├── shared_link.py
+│   │   └── generation_job.py   # Tracks external task ID + lifecycle status
+│   ├── generation/             # Strategy Pattern — song generation
+│   │   ├── __init__.py         # Public API surface
+│   │   ├── base.py             # SongGeneratorStrategy (ABC) + dataclasses
+│   │   ├── mock_strategy.py    # Strategy A: offline / deterministic
+│   │   ├── suno_strategy.py    # Strategy B: live Suno API
+│   │   └── selector.py        # Centralised factory (get_generator_strategy)
+│   ├── admin.py                # Django Admin CRUD registrations
+│   ├── views.py                # JSON views including generation endpoints
+│   └── urls.py                 # URL patterns
+├── .env.example                # Environment variable template
 ├── manage.py
-└── db.sqlite3              # SQLite database (created after migrate)
+└── db.sqlite3                  # SQLite database (created after migrate)
 ```
 
 ---
@@ -119,10 +135,11 @@ Adapted from the Exercise 2 domain diagram with implementation-driven refinement
 | `VoiceStyle` | Voice type (Male/Female/Robotic/Duet) | OneToOne composition of `Song` |
 | `Lyrics` | Custom / AI-generated / Instrumental | OneToOne composition of `Song` |
 | `SharedLink` | UUID-based secure share token | OneToOne with `Song`; FK to creator `User` |
+| `GenerationJob` | External task ID, strategy name, status, audio URL | OneToOne with `Song`; added in Exercise 4 |
 
 > **Not persisted as models:**  
 > `AudioPlayer` — pure UI component, no persistent state.  
-> `AIGenerationAPI` — external third-party service; interaction tracked via `Song.status`.
+> `AIGenerationAPI` — external third-party service; interaction tracked via `Song.status` and `GenerationJob`.
 
 ---
 
@@ -155,13 +172,15 @@ Log in at `/admin/` with the superuser credentials.
 All seven domain models are registered with search, filter, and inline editing.  
 `Song` admin embeds `Metadata`, `VoiceStyle`, and `Lyrics` as inline forms.
 
-### API Endpoints (Read)
+### API Endpoints
 
-| Endpoint | Auth required | Description |
-|---|---|---|
-| `GET /library/` | Yes | List all completed songs in the user's library |
-| `GET /songs/<id>/` | Yes | Full detail for a specific song (owner only) |
-| `GET /share/<uuid>/` | No* | Public metadata; audio URL only for logged-in users |
+| Endpoint | Method | Auth | Description |
+|---|---|---|---|
+| `/library/` | GET | Yes | List all completed songs in the user's library |
+| `/songs/<id>/` | GET | Yes | Full detail for a specific song (owner only) |
+| `/songs/generate/` | POST | Yes | Create a song and trigger generation (Strategy Pattern) |
+| `/songs/<id>/generation-status/` | GET | Yes | Poll the current generation status |
+| `/share/<uuid>/` | GET | No* | Public metadata; audio URL only for logged-in users |
 
 *Guests see metadata; must log in to receive the audio stream URL (FR-5.3).
 
@@ -176,7 +195,7 @@ All seven domain models are registered with search, filter, and inline editing.
 
 ---
 
-## CRUD Functionality
+## Tests
 
 ### How to Run
 
@@ -187,7 +206,7 @@ python manage.py test music --verbosity=2
 
 Expected final output:
 ```
-Ran 30 tests in ~3s
+Ran 50 tests in ~30s
 OK
 ```
 
@@ -301,4 +320,238 @@ Django creates a **temporary in-memory test database**, runs all tests, then des
 | `test_guest_sees_metadata_no_audio` | Guest visits a public shared link | 200 OK; song title/mood present; `audio_url` is `null`; login prompt message included |
 | `test_authenticated_user_receives_audio_url_field` | Logged-in user visits a shared link | 200 OK; `audio_url` key present; no login message |
 | `test_private_song_hidden_from_guest` | Guest visits a shared link for a **private** song | 404 Not Found |
+
+---
+
+#### 12. `MockStrategyUnitTests` — Mock strategy (no DB / no HTTP)
+
+| Test | What it does | Expected result |
+|---|---|---|
+| `test_generate_returns_success` | Calls `generate()` | `status == "SUCCESS"` immediately |
+| `test_generate_returns_mock_task_id` | Calls `generate()` | `task_id` starts with `"mock-"` |
+| `test_generate_returns_audio_url` | Calls `generate()` | `audio_url` is a non-empty HTTP URL |
+| `test_generate_is_deterministic_format` | Calls `generate()` twice | Both return `SUCCESS` |
+| `test_get_status_returns_success_for_mock_task` | Passes a mock task_id to `get_status()` | `SUCCESS` |
+| `test_get_status_fails_for_non_mock_task_id` | Passes a foreign task_id to `get_status()` | `FAILED` with error message |
+| `test_mock_implements_abstract_interface` | Checks class hierarchy | `MockSongGeneratorStrategy` is a `SongGeneratorStrategy` |
+
+---
+
+#### 13. `StrategySelectorTests` — Centralised factory
+
+| Test | What it does | Expected result |
+|---|---|---|
+| `test_selector_returns_mock_by_default` | `GENERATOR_STRATEGY=mock` in settings | Returns `MockSongGeneratorStrategy` |
+| `test_selector_is_case_insensitive` | Passes `"MOCK"` | Returns `MockSongGeneratorStrategy` |
+| `test_selector_raises_for_unknown_strategy` | Passes `"nonexistent"` | `ValueError` raised |
+| `test_explicit_name_overrides_settings` | Passes `"mock"` explicitly | Returns `MockSongGeneratorStrategy` |
+
+---
+
+#### 14. `GenerateSongViewTests` — `POST /songs/generate/`
+
+| Test | What it does | Expected result |
+|---|---|---|
+| `test_generate_creates_song_and_job` | Valid POST with mock strategy | 201; Song + GenerationJob created; `status == "SUCCESS"` |
+| `test_generate_requires_title` | POST with no `title` | 400 with `"title"` in error |
+| `test_generate_rejects_invalid_mood` | POST with `mood="not_a_mood"` | 400 |
+| `test_generate_requires_authentication` | Unauthenticated POST | 302 redirect to login |
+| `test_generate_rejects_malformed_json` | Non-JSON body | 400 |
+
+---
+
+#### 15. `GenerationStatusViewTests` — `GET /songs/<pk>/generation-status/`
+
+| Test | What it does | Expected result |
+|---|---|---|
+| `test_status_returns_success_for_completed_job` | Song with `SUCCESS` job | 200; `status == "SUCCESS"` and `audio_url` present |
+| `test_status_404_for_song_without_job` | Song has no `GenerationJob` | 404 |
+| `test_status_404_for_other_users_song` | Request for another user's song | 404 |
+| `test_status_requires_authentication` | Unauthenticated request | 302 redirect to login |
+
+---
+
+## Song Generation — Strategy Pattern
+
+The generation component uses the **Strategy design pattern** so that the generation
+behaviour can be swapped at runtime without changing any domain or view code.
+
+### How It Works
+
+```
+music/generation/
+├── base.py              ← SongGeneratorStrategy (ABC) + SongGenerationRequest / SongGenerationResult
+├── mock_strategy.py     ← Strategy A: offline / deterministic
+├── suno_strategy.py     ← Strategy B: live Suno API
+├── selector.py          ← centralised factory — the only place that reads GENERATOR_STRATEGY
+└── __init__.py          ← public API surface
+```
+
+The `GenerationJob` model (migration `0002`) persists the external task ID, strategy
+name, and lifecycle status for each song, decoupling generation tracking from the
+`Song` model itself.
+
+---
+
+### Generation API Endpoints
+
+| Endpoint | Method | Auth | Description |
+|---|---|---|---|
+| `/songs/generate/` | POST | Yes | Create a song and trigger generation |
+| `/songs/<id>/generation-status/` | GET | Yes | Poll the current generation status |
+
+#### POST `/songs/generate/` — request body
+
+```json
+{
+    "title":          "Summer Vibes",
+    "mood":           "happy",
+    "theme":          "A warm summer evening on the beach",
+    "occasion":       "party",
+    "voice_style":    "female",
+    "lyrics_mode":    "ai_generated",
+    "lyrics_content": ""
+}
+```
+
+Valid enum values:
+- `mood`: `happy` `sad` `energetic` `calm` `romantic` `angry` `melancholic`
+- `occasion`: `birthday` `wedding` `party` `relaxation` `workout` `general`
+- `voice_style`: `male` `female` `robotic` `duet`
+- `lyrics_mode`: `custom` `ai_generated` `instrumental`
+
+---
+
+### Running in Mock Mode (offline, no API key needed)
+
+Mock mode is the **default**.  No changes to `.env` are required.
+
+```bash
+# .env (default)
+GENERATOR_STRATEGY=mock
+```
+
+```bash
+# Apply the new migration first
+python manage.py migrate
+
+# Start the server
+python manage.py runserver
+```
+
+Send a test request (requires a logged-in session cookie; use Django shell or
+`curl` with session auth):
+
+```bash
+curl -X POST http://127.0.0.1:8000/songs/generate/ \
+  -H "Content-Type: application/json" \
+  -b "sessionid=<your-session-id>" \
+  -d '{"title": "Mock Test Song", "mood": "happy", "occasion": "general",
+       "voice_style": "female", "lyrics_mode": "ai_generated"}'
+```
+
+Example response:
+
+```json
+{
+    "song_id": 1,
+    "task_id": "mock-3f8a1c2b9d4e",
+    "status": "SUCCESS",
+    "audio_url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
+    "error": null,
+    "strategy": "mock"
+}
+```
+
+Check generation status (already SUCCESS for mock):
+
+```bash
+curl http://127.0.0.1:8000/songs/1/generation-status/ \
+  -b "sessionid=<your-session-id>"
+```
+
+---
+
+### Running in Suno Mode (live API)
+
+#### 1. Obtain a Suno API key
+
+Sign up at <https://sunoapi.org/api-key> and copy your key.
+
+#### 2. Configure `.env`
+
+```env
+SECRET_KEY="django-insecure-your-secret-key"
+GENERATOR_STRATEGY=suno
+SUNO_API_KEY=your-actual-suno-api-key-here
+```
+
+> **Never commit `.env` to version control.**  It is listed in `.gitignore`.
+> Use `.env.example` as a template.
+
+#### 3. Start the server
+
+```bash
+python manage.py runserver
+```
+
+#### 4. Trigger generation
+
+```bash
+curl -X POST http://127.0.0.1:8000/songs/generate/ \
+  -H "Content-Type: application/json" \
+  -b "sessionid=<your-session-id>" \
+  -d '{"title": "Suno Test Song", "mood": "energetic", "occasion": "party",
+       "voice_style": "female", "lyrics_mode": "ai_generated",
+       "theme": "An upbeat party anthem"}'
+```
+
+Example response (Suno returns PENDING immediately):
+
+```json
+{
+    "song_id": 2,
+    "task_id": "5c79xxxxxxxxxxbe8e",
+    "status": "PENDING",
+    "audio_url": null,
+    "error": null,
+    "strategy": "suno"
+}
+```
+
+#### 5. Poll for status
+
+Suno generation typically completes in 30–180 seconds.
+
+```bash
+curl http://127.0.0.1:8000/songs/2/generation-status/ \
+  -b "sessionid=<your-session-id>"
+```
+
+When the track is ready, `status` will be `SUCCESS` and `audio_url` will contain
+the generated MP3 link:
+
+```json
+{
+    "song_id": 2,
+    "task_id": "5c79xxxxxxxxxxbe8e",
+    "status": "SUCCESS",
+    "audio_url": "https://cdn2.suno.ai/generated-track.mp3",
+    "song_status": "completed"
+}
+```
+
+---
+
+### Where the Suno API Key Lives
+
+| Location | Purpose |
+|---|---|
+| `.env` file (project root) | Your local secret — **never committed** |
+| `settings.SUNO_API_KEY` | Read from `os.getenv("SUNO_API_KEY", "")` |
+| `SunoSongGeneratorStrategy.__init__` | Validated at construction time |
+
+The `.gitignore` (or your VCS ignore rules) must exclude `.env`.  
+Use `.env.example` as the committed template so collaborators know which
+variables are expected without exposing real credentials.
 

@@ -5,6 +5,7 @@ from .metadata import Metadata
 from .voice_style import VoiceStyle
 from .lyrics import Lyrics
 from .shared_link import SharedLink
+from .generation_job import GenerationJob
 
 __all__ = [
     "User",
@@ -14,4 +15,5 @@ __all__ = [
     "VoiceStyle",
     "Lyrics",
     "SharedLink",
+    "GenerationJob",
 ]

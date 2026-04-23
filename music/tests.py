@@ -8,15 +8,21 @@ Covers:
   - SharedLink UUID generation and uniqueness
   - View access control (authentication gates, ownership checks)
   - Shared-link guest restrictions (metadata visible, audio gated)
+  - Exercise 4: Strategy Pattern — mock strategy unit tests + generate/status views
 """
 
+import json
 import uuid
 
 from django.core.exceptions import ValidationError
-from django.test import Client, TestCase
+from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 
-from .models import Library, Lyrics, Metadata, SharedLink, Song, User, VoiceStyle
+from .generation import SongGenerationRequest, get_generator_strategy
+from .generation.base import SongGeneratorStrategy
+from .generation.mock_strategy import MockSongGeneratorStrategy
+from .generation.selector import get_generator_strategy as selector_get
+from .models import GenerationJob, Library, Lyrics, Metadata, SharedLink, Song, User, VoiceStyle
 
 
 # ---------------------------------------------------------------------------
@@ -529,3 +535,228 @@ class SharedLinkViewTests(TestCase):
         link = SharedLink.objects.create(song=song, created_by=user)
         response = self.client.get(reverse("music:shared_link", args=[link.token]))
         self.assertEqual(response.status_code, 404)
+
+
+# ===========================================================================
+# 12. Strategy Pattern — unit tests (Exercise 4)
+# ===========================================================================
+
+class MockStrategyUnitTests(TestCase):
+    """Test the MockSongGeneratorStrategy in isolation (no DB, no HTTP)."""
+
+    def setUp(self):
+        self.strategy = MockSongGeneratorStrategy()
+        self.request = SongGenerationRequest(
+            song_id=1,
+            title="Test Song",
+            prompt="A sunny pop track",
+            style="pop",
+            lyrics="",
+            instrumental=False,
+        )
+
+    def test_generate_returns_success(self):
+        """Mock generate() must return status=SUCCESS immediately."""
+        result = self.strategy.generate(self.request)
+        self.assertEqual(result.status, "SUCCESS")
+
+    def test_generate_returns_mock_task_id(self):
+        """task_id must start with 'mock-'."""
+        result = self.strategy.generate(self.request)
+        self.assertTrue(result.task_id.startswith("mock-"))
+
+    def test_generate_returns_audio_url(self):
+        """Mock must return a non-empty audio_url."""
+        result = self.strategy.generate(self.request)
+        self.assertTrue(result.audio_url.startswith("http"))
+
+    def test_generate_is_deterministic_format(self):
+        """Two calls must both return SUCCESS (deterministic behaviour)."""
+        r1 = self.strategy.generate(self.request)
+        r2 = self.strategy.generate(self.request)
+        self.assertEqual(r1.status, r2.status)
+
+    def test_get_status_returns_success_for_mock_task(self):
+        """get_status() on a mock task_id must return SUCCESS."""
+        result = self.strategy.generate(self.request)
+        status = self.strategy.get_status(result.task_id)
+        self.assertEqual(status.status, "SUCCESS")
+
+    def test_get_status_fails_for_non_mock_task_id(self):
+        """get_status() on a foreign task_id must return FAILED with an error."""
+        result = self.strategy.get_status("suno-abc123")
+        self.assertEqual(result.status, "FAILED")
+        self.assertIn("mock", result.error.lower())
+
+    def test_mock_implements_abstract_interface(self):
+        """MockSongGeneratorStrategy must be a concrete subclass of SongGeneratorStrategy."""
+        self.assertIsInstance(self.strategy, SongGeneratorStrategy)
+
+
+class StrategySelectorTests(TestCase):
+    """Test the centralised strategy selector."""
+
+    @override_settings(GENERATOR_STRATEGY="mock")
+    def test_selector_returns_mock_by_default(self):
+        strategy = selector_get()
+        self.assertIsInstance(strategy, MockSongGeneratorStrategy)
+
+    @override_settings(GENERATOR_STRATEGY="MOCK")
+    def test_selector_is_case_insensitive(self):
+        strategy = selector_get("MOCK")
+        self.assertIsInstance(strategy, MockSongGeneratorStrategy)
+
+    def test_selector_raises_for_unknown_strategy(self):
+        with self.assertRaises(ValueError):
+            selector_get("nonexistent")
+
+    def test_explicit_name_overrides_settings(self):
+        strategy = selector_get("mock")
+        self.assertIsInstance(strategy, MockSongGeneratorStrategy)
+
+
+# ===========================================================================
+# 13. Generation views — POST /songs/generate/ and GET status (Exercise 4)
+# ===========================================================================
+
+class GenerateSongViewTests(TestCase):
+    """Test POST /songs/generate/ with the mock strategy."""
+
+    def setUp(self):
+        self.user = make_user()
+        self.client.login(username="testuser", password="testpass123")
+
+    @override_settings(GENERATOR_STRATEGY="mock")
+    def test_generate_creates_song_and_job(self):
+        """A valid POST must create a Song, related objects, and a GenerationJob."""
+        payload = {
+            "title": "Strategy Test Song",
+            "mood": "happy",
+            "theme": "A joyful day",
+            "occasion": "party",
+            "voice_style": "female",
+            "lyrics_mode": "ai_generated",
+        }
+        response = self.client.post(
+            reverse("music:generate_song"),
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 201)
+        data = response.json()
+        self.assertIn("song_id", data)
+        self.assertIn("task_id", data)
+        self.assertEqual(data["strategy"], "mock")
+        self.assertEqual(data["status"], "SUCCESS")
+        self.assertIsNotNone(data["audio_url"])
+
+        # Verify DB state
+        song = Song.objects.get(pk=data["song_id"])
+        self.assertEqual(song.status, Song.Status.COMPLETED)
+        self.assertTrue(hasattr(song, "generation_job"))
+        self.assertEqual(song.generation_job.strategy, "mock")
+
+    @override_settings(GENERATOR_STRATEGY="mock")
+    def test_generate_requires_title(self):
+        """Missing title must return 400."""
+        response = self.client.post(
+            reverse("music:generate_song"),
+            data=json.dumps({"mood": "happy"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("title", response.json()["error"])
+
+    @override_settings(GENERATOR_STRATEGY="mock")
+    def test_generate_rejects_invalid_mood(self):
+        """An invalid mood value must return 400."""
+        response = self.client.post(
+            reverse("music:generate_song"),
+            data=json.dumps({"title": "X", "mood": "not_a_mood"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_generate_requires_authentication(self):
+        """Unauthenticated POST must redirect to login."""
+        self.client.logout()
+        response = self.client.post(
+            reverse("music:generate_song"),
+            data=json.dumps({"title": "X"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 302)
+
+    @override_settings(GENERATOR_STRATEGY="mock")
+    def test_generate_rejects_malformed_json(self):
+        """Non-JSON body must return 400."""
+        response = self.client.post(
+            reverse("music:generate_song"),
+            data="not json",
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+
+class GenerationStatusViewTests(TestCase):
+    """Test GET /songs/<pk>/generation-status/."""
+
+    def setUp(self):
+        self.user = make_user()
+        self.client.login(username="testuser", password="testpass123")
+
+    def _create_song_with_job(self, status="SUCCESS"):
+        lib, _ = Library.objects.get_or_create(owner=self.user)
+        song = Song.objects.create(
+            library=lib,
+            status=Song.Status.COMPLETED if status == "SUCCESS" else Song.Status.GENERATING,
+        )
+        GenerationJob.objects.create(
+            song=song,
+            task_id="mock-abc123",
+            strategy="mock",
+            status=status,
+            audio_url="https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
+        )
+        return song
+
+    def test_status_returns_success_for_completed_job(self):
+        """A completed job must return status=SUCCESS without extra polling."""
+        song = self._create_song_with_job("SUCCESS")
+        response = self.client.get(
+            reverse("music:generation_status", args=[song.pk])
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["status"], "SUCCESS")
+        self.assertIsNotNone(data["audio_url"])
+
+    def test_status_404_for_song_without_job(self):
+        """Song with no GenerationJob must return 404."""
+        lib, _ = Library.objects.get_or_create(owner=self.user)
+        song = Song.objects.create(library=lib)
+        response = self.client.get(
+            reverse("music:generation_status", args=[song.pk])
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_status_404_for_other_users_song(self):
+        """Status endpoint must not expose another user's song."""
+        other_user = make_user("other", "pass")
+        lib = make_library(other_user)
+        song = Song.objects.create(library=lib)
+        GenerationJob.objects.create(
+            song=song, task_id="mock-xyz", strategy="mock", status="SUCCESS"
+        )
+        response = self.client.get(
+            reverse("music:generation_status", args=[song.pk])
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_status_requires_authentication(self):
+        """Unauthenticated request must redirect to login."""
+        self.client.logout()
+        response = self.client.get(
+            reverse("music:generation_status", args=[999])
+        )
+        self.assertEqual(response.status_code, 302)
