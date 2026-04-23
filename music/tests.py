@@ -404,7 +404,7 @@ class LibraryViewTests(TestCase):
         """
         response = self.client.get(reverse("music:library"))
         self.assertEqual(response.status_code, 302)
-        self.assertIn("/accounts/login/", response["Location"])
+        self.assertIn("/auth/login/", response["Location"])
 
     def test_library_returns_200_for_authenticated_user(self):
         """
@@ -760,3 +760,367 @@ class GenerationStatusViewTests(TestCase):
             reverse("music:generation_status", args=[999])
         )
         self.assertEqual(response.status_code, 302)
+
+
+# ===========================================================================
+# 14. Auth — POST /auth/register/ (FR-1.3)
+# ===========================================================================
+
+class RegisterViewTests(TestCase):
+    """Test local account registration endpoint."""
+
+    def _post(self, body):
+        return self.client.post(
+            reverse("music:register"),
+            data=json.dumps(body),
+            content_type="application/json",
+        )
+
+    def test_register_success(self):
+        """
+        Valid registration payload creates a new user and returns 201.
+        Expect: response contains id, username, email.
+        """
+        response = self._post({
+            "username": "newuser",
+            "password": "StrongP@ss1",
+            "email": "newuser@example.com",
+            "first_name": "New",
+            "last_name": "User",
+        })
+        self.assertEqual(response.status_code, 201)
+        data = response.json()
+        self.assertEqual(data["username"], "newuser")
+        self.assertEqual(data["email"], "newuser@example.com")
+        self.assertEqual(data["first_name"], "New")
+        self.assertTrue(User.objects.filter(username="newuser").exists())
+
+    def test_register_missing_required_fields(self):
+        """
+        Missing password returns 400.
+        """
+        response = self._post({"username": "alice", "email": "a@b.com"})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("required", response.json()["error"])
+
+    def test_register_duplicate_username(self):
+        """
+        Registering with an already-taken username returns 400.
+        """
+        make_user("taken_user")
+        response = self._post({
+            "username": "taken_user",
+            "password": "pass",
+            "email": "other@example.com",
+        })
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Username", response.json()["error"])
+
+    def test_register_duplicate_email(self):
+        """
+        Registering with an already-used email returns 400.
+        """
+        User.objects.create_user("userA", email="dup@example.com", password="p")
+        response = self._post({
+            "username": "userB",
+            "password": "pass",
+            "email": "dup@example.com",
+        })
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Email", response.json()["error"])
+
+    def test_register_invalid_json(self):
+        """
+        Non-JSON body returns 400.
+        """
+        response = self.client.post(
+            reverse("music:register"),
+            data="not json",
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+
+# ===========================================================================
+# 15. Auth — POST /auth/login/ (FR-1.1 local)
+# ===========================================================================
+
+class LoginViewTests(TestCase):
+    """Test local account login endpoint."""
+
+    def setUp(self):
+        self.user = make_user("loginuser", "correctpass")
+
+    def _post(self, body):
+        return self.client.post(
+            reverse("music:login"),
+            data=json.dumps(body),
+            content_type="application/json",
+        )
+
+    def test_login_success(self):
+        """
+        Valid credentials return 200 and establish a session.
+        Expect: response contains id and username; subsequent requests are authenticated.
+        """
+        response = self._post({"username": "loginuser", "password": "correctpass"})
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["username"], "loginuser")
+        self.assertIn("id", data)
+        # Verify session is established by accessing a protected resource
+        library_response = self.client.get(reverse("music:library"))
+        self.assertEqual(library_response.status_code, 200)
+
+    def test_login_wrong_password(self):
+        """
+        Wrong password returns 401 Unauthorized.
+        """
+        response = self._post({"username": "loginuser", "password": "wrongpass"})
+        self.assertEqual(response.status_code, 401)
+        self.assertIn("Invalid", response.json()["error"])
+
+    def test_login_nonexistent_user(self):
+        """
+        Non-existent username returns 401.
+        """
+        response = self._post({"username": "ghost", "password": "pass"})
+        self.assertEqual(response.status_code, 401)
+
+    def test_login_missing_fields(self):
+        """
+        Missing username returns 400.
+        """
+        response = self._post({"password": "pass"})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("required", response.json()["error"])
+
+
+# ===========================================================================
+# 16. Auth — POST /auth/logout/ (FR-1.1)
+# ===========================================================================
+
+class LogoutViewTests(TestCase):
+    """Test session logout endpoint."""
+
+    def test_logout_success(self):
+        """
+        Authenticated user can log out; session is destroyed.
+        Expect: 200, subsequent protected request returns 302.
+        """
+        make_user()
+        self.client.login(username="testuser", password="testpass123")
+        response = self.client.post(reverse("music:logout"))
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Logged out", response.json()["message"])
+        # Verify session is gone
+        follow_up = self.client.get(reverse("music:library"))
+        self.assertEqual(follow_up.status_code, 302)
+
+    def test_logout_requires_authentication(self):
+        """
+        Unauthenticated POST to logout must redirect to login.
+        """
+        response = self.client.post(reverse("music:logout"))
+        self.assertEqual(response.status_code, 302)
+
+
+# ===========================================================================
+# 17. Song — DELETE /songs/<pk>/delete/ (FR-3.4)
+# ===========================================================================
+
+class DeleteSongViewTests(TestCase):
+    """Test song deletion endpoint."""
+
+    def setUp(self):
+        self.user = make_user()
+        self.lib = make_library(self.user)
+        self.client.login(username="testuser", password="testpass123")
+
+    def test_delete_own_song(self):
+        """
+        Owner deletes their song; song is removed from DB.
+        Expect: 200, song no longer exists, library count decreases.
+        """
+        song = make_full_song(self.lib)
+        response = self.client.delete(
+            reverse("music:delete_song", args=[song.pk])
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(Song.objects.filter(pk=song.pk).exists())
+        self.assertFalse(Metadata.objects.filter(song_id=song.pk).exists())
+
+    def test_delete_non_owner_song_returns_404(self):
+        """
+        Attempting to delete another user's song returns 404 (ownership gate).
+        """
+        other = make_user("other", "pass2")
+        other_lib = make_library(other)
+        song = make_full_song(other_lib)
+        response = self.client.delete(
+            reverse("music:delete_song", args=[song.pk])
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertTrue(Song.objects.filter(pk=song.pk).exists())
+
+    def test_delete_requires_authentication(self):
+        """
+        Unauthenticated DELETE request must redirect to login (FR-1.4).
+        """
+        self.client.logout()
+        song = make_full_song(self.lib)
+        response = self.client.delete(
+            reverse("music:delete_song", args=[song.pk])
+        )
+        self.assertEqual(response.status_code, 302)
+
+    def test_delete_wrong_method_returns_405(self):
+        """
+        GET request to the delete endpoint must return 405 Method Not Allowed.
+        """
+        song = make_full_song(self.lib)
+        response = self.client.get(
+            reverse("music:delete_song", args=[song.pk])
+        )
+        self.assertEqual(response.status_code, 405)
+
+
+# ===========================================================================
+# 18. Song — POST /songs/<pk>/share/ (FR-5.2)
+# ===========================================================================
+
+class CreateShareLinkViewTests(TestCase):
+    """Test share link creation endpoint."""
+
+    def setUp(self):
+        self.user = make_user()
+        self.lib = make_library(self.user)
+        self.client.login(username="testuser", password="testpass123")
+
+    def test_create_share_link(self):
+        """
+        Owner posts to share endpoint; a unique UUID token is returned.
+        Expect: 201, token is valid UUID, url contains the token.
+        """
+        song = make_full_song(self.lib)
+        response = self.client.post(
+            reverse("music:create_shared_link", args=[song.pk])
+        )
+        self.assertEqual(response.status_code, 201)
+        data = response.json()
+        self.assertIn("token", data)
+        self.assertIn("url", data)
+        self.assertTrue(data["created"])
+        # Token must be a valid UUID
+        import uuid as _uuid
+        _uuid.UUID(data["token"])
+        self.assertTrue(SharedLink.objects.filter(song=song).exists())
+
+    def test_create_share_link_is_idempotent(self):
+        """
+        Calling the share endpoint twice returns the same token.
+        Expect: second call returns 200 (not 201) with the same token.
+        """
+        song = make_full_song(self.lib)
+        r1 = self.client.post(reverse("music:create_shared_link", args=[song.pk]))
+        r2 = self.client.post(reverse("music:create_shared_link", args=[song.pk]))
+        self.assertEqual(r1.status_code, 201)
+        self.assertEqual(r2.status_code, 200)
+        self.assertEqual(r1.json()["token"], r2.json()["token"])
+
+    def test_create_share_link_non_owner_returns_404(self):
+        """
+        Another user cannot create a share link for a song they don't own.
+        """
+        other = make_user("other2", "pass2")
+        other_lib = make_library(other)
+        song = make_full_song(other_lib)
+        response = self.client.post(
+            reverse("music:create_shared_link", args=[song.pk])
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_create_share_link_requires_authentication(self):
+        """
+        Unauthenticated request to share endpoint must redirect to login.
+        """
+        self.client.logout()
+        song = make_full_song(self.lib)
+        response = self.client.post(
+            reverse("music:create_shared_link", args=[song.pk])
+        )
+        self.assertEqual(response.status_code, 302)
+
+
+# ===========================================================================
+# 19. Song — GET /songs/<pk>/download/ (FR-5.1)
+# ===========================================================================
+
+class DownloadSongViewTests(TestCase):
+    """Test audio download URL endpoint."""
+
+    def setUp(self):
+        self.user = make_user()
+        self.lib = make_library(self.user)
+        self.client.login(username="testuser", password="testpass123")
+
+    def test_download_with_generation_job_audio_url(self):
+        """
+        Song with a completed GenerationJob returns the audio URL.
+        Expect: 200, download_url is present and non-empty.
+        """
+        song = make_full_song(self.lib)
+        GenerationJob.objects.create(
+            song=song,
+            task_id="mock-dl1",
+            strategy="mock",
+            status="SUCCESS",
+            audio_url="https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
+        )
+        response = self.client.get(
+            reverse("music:download_song", args=[song.pk])
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn("download_url", data)
+        self.assertTrue(data["download_url"].startswith("http"))
+
+    def test_download_no_audio_returns_404(self):
+        """
+        Song with no audio file or job returns 404.
+        Expect: error message included in response.
+        """
+        song = make_full_song(self.lib)
+        response = self.client.get(
+            reverse("music:download_song", args=[song.pk])
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("error", response.json())
+
+    def test_download_requires_authentication(self):
+        """
+        Unauthenticated request to download endpoint must redirect to login.
+        """
+        self.client.logout()
+        song = make_full_song(self.lib)
+        response = self.client.get(
+            reverse("music:download_song", args=[song.pk])
+        )
+        self.assertEqual(response.status_code, 302)
+
+    def test_download_non_owner_returns_404(self):
+        """
+        Downloading another user's song returns 404 (FR-5.3: access control).
+        """
+        other = make_user("other3", "pass3")
+        other_lib = make_library(other)
+        song = make_full_song(other_lib)
+        GenerationJob.objects.create(
+            song=song, task_id="mock-dl2", strategy="mock",
+            status="SUCCESS", audio_url="https://example.com/audio.mp3",
+        )
+        response = self.client.get(
+            reverse("music:download_song", args=[song.pk])
+        )
+        self.assertEqual(response.status_code, 404)
+

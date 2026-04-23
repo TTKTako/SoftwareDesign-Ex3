@@ -55,6 +55,14 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    # Required by django-allauth socialaccount
+    'django.contrib.sites',
+    # django-allauth — authentication & Google OAuth (FR-1.1, FR-1.2)
+    'allauth',
+    'allauth.account',
+    'allauth.socialaccount',
+    'allauth.socialaccount.providers.google',
+    'allauth.headless',
     # Cithara domain app
     'music',
 ]
@@ -65,6 +73,8 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    # Required by allauth 0.56+ (must follow AuthenticationMiddleware)
+    'allauth.account.middleware.AccountMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
@@ -118,6 +128,86 @@ AUTH_PASSWORD_VALIDATORS = [
         'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
     },
 ]
+
+# ---------------------------------------------------------------------------
+# Password hashing — Argon2 first (NFR: Security Requirements)
+# Argon2 is the winner of the Password Hashing Competition; memory-hard.
+# Falls back to PBKDF2 for existing hashes during migration period.
+# ---------------------------------------------------------------------------
+PASSWORD_HASHERS = [
+    'django.contrib.auth.hashers.Argon2PasswordHasher',
+    'django.contrib.auth.hashers.PBKDF2PasswordHasher',
+    'django.contrib.auth.hashers.PBKDF2SHA1PasswordHasher',
+]
+
+# ---------------------------------------------------------------------------
+# Session management (FR-1.5, NFR: Session Timeout Policy)
+# Hard 30-minute timeout; sliding window resets on every authenticated request.
+# ---------------------------------------------------------------------------
+SESSION_COOKIE_AGE = 1800              # 30 minutes in seconds
+SESSION_SAVE_EVERY_REQUEST = True      # sliding window — resets timer on activity
+SESSION_EXPIRE_AT_BROWSER_CLOSE = True # also expire when browser is closed
+SESSION_COOKIE_HTTPONLY = True         # JS cannot access session cookie
+
+# ---------------------------------------------------------------------------
+# Security headers (NFR: Data Encryption, Access Control)
+# ---------------------------------------------------------------------------
+SECURE_CONTENT_TYPE_NOSNIFF = True   # prevent MIME-type sniffing
+X_FRAME_OPTIONS = 'DENY'             # block clickjacking (FR-5.3, private songs)
+CSRF_COOKIE_HTTPONLY = True          # JS cannot read CSRF cookie
+# Note: SECURE_SSL_REDIRECT = True and HSTS should be enabled in production.
+# Keep False here so local development works over plain HTTP.
+
+# ---------------------------------------------------------------------------
+# Authentication backends — Django ModelBackend + allauth OAuth backend
+# ---------------------------------------------------------------------------
+AUTHENTICATION_BACKENDS = [
+    'django.contrib.auth.backends.ModelBackend',
+    'allauth.account.auth_backends.AuthenticationBackend',
+]
+
+# ---------------------------------------------------------------------------
+# django.contrib.sites — required by allauth socialaccount
+# ---------------------------------------------------------------------------
+SITE_ID = 1
+
+# ---------------------------------------------------------------------------
+# Login URL — where @login_required redirects unauthenticated requests
+# ---------------------------------------------------------------------------
+LOGIN_URL = '/auth/login/'
+
+# ---------------------------------------------------------------------------
+# allauth configuration (headless/API mode — no HTML templates)
+# ---------------------------------------------------------------------------
+HEADLESS_ONLY = True                    # disable template-based auth views
+
+ACCOUNT_EMAIL_REQUIRED = True
+ACCOUNT_USERNAME_REQUIRED = True
+ACCOUNT_EMAIL_VERIFICATION = 'none'    # skip email confirmation in dev
+ACCOUNT_AUTHENTICATION_METHOD = 'username_email'
+ACCOUNT_USER_MODEL_USERNAME_FIELD = 'username'
+ACCOUNT_DEFAULT_HTTP_PROTOCOL = 'http' # use 'https' in production
+
+# ---------------------------------------------------------------------------
+# Google OAuth 2.0 — provider configuration (FR-1.1, FR-1.2)
+# Credentials are injected from the environment (.env file).
+# NEVER commit real client_id / secret to source control.
+# ---------------------------------------------------------------------------
+GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID', '')
+GOOGLE_CLIENT_SECRET = os.getenv('GOOGLE_CLIENT_SECRET', '')
+
+SOCIALACCOUNT_PROVIDERS = {
+    'google': {
+        'APP': {
+            'client_id': GOOGLE_CLIENT_ID,
+            'secret': GOOGLE_CLIENT_SECRET,
+            'key': '',
+        },
+        'SCOPE': ['profile', 'email'],
+        'AUTH_PARAMS': {'access_type': 'online'},
+        'OAUTH_PKCE_ENABLED': True,
+    }
+}
 
 
 # Internationalization

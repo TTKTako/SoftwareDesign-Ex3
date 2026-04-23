@@ -1,13 +1,17 @@
 import json
+from datetime import timedelta
 
 from django.conf import settings
+from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.decorators import login_required
 from django.http import Http404, JsonResponse
 from django.shortcuts import get_object_or_404
-from django.views.decorators.http import require_POST
+from django.urls import reverse
+from django.utils import timezone
+from django.views.decorators.http import require_POST, require_http_methods
 
 from .generation import SongGenerationRequest, get_generator_strategy
-from .models import GenerationJob, Library, Lyrics, Metadata, SharedLink, Song, VoiceStyle
+from .models import GenerationJob, Library, Lyrics, Metadata, SharedLink, Song, User, VoiceStyle
 
 
 # ---------------------------------------------------------------------------
@@ -271,6 +275,26 @@ def generation_status_view(request, pk):
             }
         )
 
+    # NFR: automatically time out generation tasks older than 10 minutes.
+    _GENERATION_TIMEOUT_SECONDS = 600  # 10 minutes
+    age = timezone.now() - job.created_at
+    if age > timedelta(seconds=_GENERATION_TIMEOUT_SECONDS):
+        job.status = "FAILED"
+        job.error_message = "Generation Timeout: the AI service took too long. Please retry."
+        job.save()
+        song.status = Song.Status.FAILED
+        song.save()
+        return JsonResponse(
+            {
+                "song_id": song.pk,
+                "task_id": job.task_id,
+                "status": "FAILED",
+                "error": job.error_message,
+                "audio_url": None,
+                "song_status": song.status,
+            }
+        )
+
     # Use the same strategy that created the job for consistent polling.
     try:
         strategy = get_generator_strategy(job.strategy)
@@ -304,3 +328,223 @@ def generation_status_view(request, pk):
             "song_status": song.status,
         }
     )
+
+
+# ---------------------------------------------------------------------------
+# Local Account registration — CREATE (FR-1.3)
+# ---------------------------------------------------------------------------
+
+@require_POST
+def register_view(request):
+    """
+    POST /auth/register/
+
+    Creates a new local user account.  No authentication required.
+
+    Request body:
+    {
+        "username":   "alice",
+        "password":   "s3cureP@ss",
+        "email":      "alice@example.com",
+        "first_name": "Alice",         // optional
+        "last_name":  "Smith"          // optional
+    }
+    """
+    try:
+        body: dict = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body must be valid JSON."}, status=400)
+
+    username: str = body.get("username", "").strip()
+    password: str = body.get("password", "")
+    email: str = body.get("email", "").strip()
+    first_name: str = body.get("first_name", "").strip()
+    last_name: str = body.get("last_name", "").strip()
+
+    if not username or not password or not email:
+        return JsonResponse(
+            {"error": "username, password, and email are required."},
+            status=400,
+        )
+
+    if User.objects.filter(username=username).exists():
+        return JsonResponse({"error": "Username already taken."}, status=400)
+
+    if User.objects.filter(email=email).exists():
+        return JsonResponse({"error": "Email already registered."}, status=400)
+
+    user = User.objects.create_user(
+        username=username,
+        password=password,
+        email=email,
+        first_name=first_name,
+        last_name=last_name,
+    )
+    return JsonResponse(
+        {
+            "id": user.pk,
+            "username": user.username,
+            "email": user.email,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+        },
+        status=201,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Local Account login — SESSION CREATE (FR-1.1)
+# ---------------------------------------------------------------------------
+
+@require_POST
+def login_view(request):
+    """
+    POST /auth/login/
+
+    Authenticates a local user and establishes a session.
+
+    Request body:
+    {
+        "username": "alice",
+        "password": "s3cureP@ss"
+    }
+
+    For Google OAuth, use the allauth headless endpoint instead:
+      POST /_allauth/browser/v1/auth/provider/token
+    """
+    try:
+        body: dict = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body must be valid JSON."}, status=400)
+
+    username: str = body.get("username", "")
+    password: str = body.get("password", "")
+
+    if not username or not password:
+        return JsonResponse(
+            {"error": "username and password are required."},
+            status=400,
+        )
+
+    user = authenticate(request, username=username, password=password)
+    if user is None:
+        return JsonResponse({"error": "Invalid credentials."}, status=401)
+
+    login(request, user)
+    return JsonResponse(
+        {
+            "id": user.pk,
+            "username": user.username,
+            "email": user.email,
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# Logout — SESSION DESTROY (FR-1.1)
+# ---------------------------------------------------------------------------
+
+@login_required
+@require_POST
+def logout_view(request):
+    """POST /auth/logout/ — destroys the current session."""
+    logout(request)
+    return JsonResponse({"message": "Logged out successfully."})
+
+
+# ---------------------------------------------------------------------------
+# Delete song — DESTROY (FR-3.4)
+# ---------------------------------------------------------------------------
+
+@login_required
+@require_http_methods(["DELETE"])
+def delete_song_view(request, pk):
+    """
+    DELETE /songs/<pk>/delete/
+
+    Permanently removes the song and all composed entities (Metadata, VoiceStyle,
+    Lyrics, GenerationJob, SharedLink) from the database.  Only the song's owner
+    may delete it.  Reducing the song count allows future generation again (FR-2.1).
+    """
+    song = get_object_or_404(Song, pk=pk, library__owner=request.user)
+    song.delete()
+    return JsonResponse({"message": f"Song {pk} deleted."})
+
+
+# ---------------------------------------------------------------------------
+# Create shared link — GENERATE URL (FR-5.2)
+# ---------------------------------------------------------------------------
+
+@login_required
+@require_POST
+def create_shared_link_view(request, pk):
+    """
+    POST /songs/<pk>/share/
+
+    Generates a unique, cryptographically secure UUID URL token for the given
+    song.  Only the song's owner may create a link.  Calling this endpoint a
+    second time returns the existing token (idempotent).
+    """
+    song = get_object_or_404(Song, pk=pk, library__owner=request.user)
+
+    link, created = SharedLink.objects.get_or_create(
+        song=song,
+        defaults={"created_by": request.user},
+    )
+
+    share_url = request.build_absolute_uri(
+        reverse("music:shared_link", args=[link.token])
+    )
+
+    return JsonResponse(
+        {
+            "token": str(link.token),
+            "url": share_url,
+            "created": created,
+        },
+        status=201 if created else 200,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Download song — RETRIEVE audio URL (FR-5.1)
+# ---------------------------------------------------------------------------
+
+@login_required
+def download_song_view(request, pk):
+    """
+    GET /songs/<pk>/download/
+
+    Returns the audio download URL for the given song.  Only the owner may
+    access this endpoint (FR-5.3: private songs protected from direct URL access).
+
+    The client should use the returned ``download_url`` to trigger the browser
+    download dialog (e.g., via an <a download> element or fetch + Blob URL).
+    """
+    song = get_object_or_404(Song, pk=pk, library__owner=request.user)
+
+    audio_url: str | None = None
+
+    # Prefer the URL stored on the GenerationJob (set by the strategy)
+    if hasattr(song, "generation_job") and song.generation_job.audio_url:
+        audio_url = song.generation_job.audio_url
+
+    # Fall back to a locally uploaded file
+    if not audio_url and song.audio_file:
+        audio_url = request.build_absolute_uri(song.audio_file.url)
+
+    if not audio_url:
+        return JsonResponse(
+            {"error": "No audio file is available for this song yet."},
+            status=404,
+        )
+
+    title: str = song.metadata.title if hasattr(song, "metadata") else f"song-{pk}"
+    return JsonResponse(
+        {
+            "song_id": pk,
+            "title": title,
+            "download_url": audio_url,
+        }
+    )
+
