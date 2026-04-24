@@ -376,7 +376,8 @@ sequenceDiagram
     View->>SunoAPI: GET https://cdn.../track.mp3  (server-side proxy)
     SunoAPI-->>View: audio bytes (stream)
     View-->>User: StreamingHttpResponse
-    Note right of View: Content-Disposition: attachment;<br/>filename="title.mp3"
+
+
 ```
 
 ### Sequence notes
