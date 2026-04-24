@@ -1,7 +1,10 @@
-# Cithara AI Music Generator — Django Backend
+# Cithara AI Music Generator
 
 Django 4.2 web application for the Cithara AI Music Generator.
 Implements the domain model (Exercise 3) and the Strategy Pattern for pluggable song generation (Exercise 4).
+
+> **Architecture**: Django's **Model-View-Template (MVT)** pattern.
+> The class diagram and song generation sequence diagram are below.
 
 ---
 
@@ -113,9 +116,11 @@ SoftwareDesign-Ex3/
 │   │   ├── base.py             # SongGeneratorStrategy (ABC) + dataclasses
 │   │   ├── mock_strategy.py    # Strategy A: offline / deterministic
 │   │   ├── suno_strategy.py    # Strategy B: live Suno API
-│   │   └── selector.py        # Centralised factory (get_generator_strategy)
+│   │   └── selector.py         # Centralised factory (get_generator_strategy)
+│   ├── static/music/           # CSS + JS assets
+│   ├── templates/music/        # HTML templates (MVT Template layer)
 │   ├── admin.py                # Django Admin CRUD registrations
-│   ├── views.py                # JSON views including generation endpoints
+│   ├── views.py                # MVT View layer — request handling + rendering
 │   └── urls.py                 # URL patterns
 ├── .env.example                # Environment variable template
 ├── manage.py
@@ -124,10 +129,268 @@ SoftwareDesign-Ex3/
 
 ---
 
-## Domain Models
+## Architecture — Model-View-Template (MVT)
 
-Adapted from the Exercise 2 domain diagram with implementation-driven refinements
-(see [Domain Model Changes from Exercise 2](#domain-model-changes-from-exercise-2) below):
+Django follows the **MVT** pattern, a variant of MVC where the framework itself acts as the Controller:
+
+| MVT Layer | Django Component | This Project |
+|---|---|---|
+| **Model** | `django.db.models.Model` subclasses | `music/models/` — `User`, `Library`, `Song`, `Metadata`, `VoiceStyle`, `Lyrics`, `SharedLink`, `GenerationJob` |
+| **View** | Python functions that handle HTTP requests | `music/views.py` — auth checks, business logic, calls Models, passes context to Templates |
+| **Template** | HTML files rendered by the View | `music/templates/music/` — `app.html`, `library.html`, `login.html`, `register.html`, `share.html` |
+
+The generation sub-system (`music/generation/`) lives inside the **Model layer** — it is domain logic (the Strategy Pattern) that the View delegates to, not HTTP handling.
+
+---
+
+## Class Diagram
+
+> The diagram is organised by MVT layer. Models are in the bottom tier, Views sit above them, Templates are HTML so they are not shown as classes. The Strategy Pattern sub-system is part of the Model layer.
+
+```mermaid
+classDiagram
+    %% ─── MODEL LAYER ─────────────────────────────────────────────
+    class User {
+        +username: str
+        +email: str
+        +first_name: str
+        +last_name: str
+    }
+
+    class Library {
+        +owner: User
+        +is_full: bool
+        +song_count: int
+    }
+
+    class Song {
+        +library: Library
+        +status: Status
+        +is_private: bool
+        +audio_file: FileField
+        +created_at: datetime
+    }
+
+    class Metadata {
+        +song: Song
+        +title: str
+        +mood: Mood
+        +theme: str
+        +occasion: Occasion
+        +duration: int
+    }
+
+    class VoiceStyle {
+        +song: Song
+        +style: Style
+    }
+
+    class Lyrics {
+        +song: Song
+        +mode: Mode
+        +content: str
+    }
+
+    class SharedLink {
+        +song: Song
+        +created_by: User
+        +token: UUID
+    }
+
+    class GenerationJob {
+        +song: Song
+        +task_id: str
+        +strategy: str
+        +status: Status
+        +audio_url: str
+        +error_message: str
+    }
+
+    %% ─── STRATEGY PATTERN (Model / domain layer) ──────────────────
+    class SongGeneratorStrategy {
+        <<abstract>>
+        +generate(request) SongGenerationResult
+        +get_status(task_id) SongGenerationResult
+    }
+
+    class MockSongGeneratorStrategy {
+        +generate(request) SongGenerationResult
+        +get_status(task_id) SongGenerationResult
+    }
+
+    class SunoSongGeneratorStrategy {
+        -_api_key: str
+        -_callback_url: str
+        +generate(request) SongGenerationResult
+        +get_status(task_id) SongGenerationResult
+    }
+
+    class SongGenerationRequest {
+        +song_id: int
+        +title: str
+        +prompt: str
+        +style: str
+        +lyrics: str
+        +instrumental: bool
+    }
+
+    class SongGenerationResult {
+        +task_id: str
+        +status: str
+        +audio_url: str
+        +error: str
+    }
+
+    %% ─── VIEW LAYER ───────────────────────────────────────────────
+    class views {
+        <<module>>
+        +library_view(request)
+        +library_api_view(request)
+        +song_detail_view(request, pk)
+        +generate_song_view(request)
+        +generation_status_view(request, pk)
+        +shared_link_view(request, token)
+        +download_song_view(request, pk)
+        +suno_callback_view(request)
+        +register_view(request)
+        +login_view(request)
+        +logout_view(request)
+    }
+
+    %% ─── RELATIONSHIPS ────────────────────────────────────────────
+    User "1" --> "1" Library : owns
+    Library "1" --> "0..*" Song : contains
+    Song "1" *-- "1" Metadata : composed of
+    Song "1" *-- "1" VoiceStyle : composed of
+    Song "1" *-- "1" Lyrics : composed of
+    Song "1" --> "0..1" SharedLink : shared via
+    Song "1" --> "0..1" GenerationJob : tracked by
+    SharedLink --> User : created_by
+
+    SongGeneratorStrategy <|-- MockSongGeneratorStrategy : implements
+    SongGeneratorStrategy <|-- SunoSongGeneratorStrategy : implements
+    SongGeneratorStrategy ..> SongGenerationRequest : uses
+    SongGeneratorStrategy ..> SongGenerationResult : returns
+
+    views ..> Song : queries
+    views ..> Library : queries
+    views ..> GenerationJob : queries / updates
+    views ..> SharedLink : queries
+    views ..> SongGeneratorStrategy : delegates to
+```
+
+### Does the class diagram follow MVT?
+
+**Yes.** Every class maps to exactly one layer with no cross-layer leakage:
+
+| Layer | Classes | Responsibility |
+|---|---|---|
+| **Model** | `User`, `Library`, `Song`, `Metadata`, `VoiceStyle`, `Lyrics`, `SharedLink`, `GenerationJob`, `SongGeneratorStrategy` (+ subclasses), `SongGenerationRequest`, `SongGenerationResult` | Data persistence, domain constraints (20-song cap, private-by-default), generation logic |
+| **View** | `views` module functions | HTTP request handling, auth checks, calling Models, passing context to Templates |
+| **Template** | `app.html`, `library.html`, `share.html`, `login.html`, `register.html` | HTML rendering — no logic, not shown as classes |
+
+The Strategy Pattern (`SongGeneratorStrategy`, `MockSongGeneratorStrategy`,
+`SunoSongGeneratorStrategy`) lives entirely in the **Model layer** — it is domain
+logic, not HTTP handling. The `views` module delegates to it but has no knowledge
+of which concrete strategy is active at runtime.
+
+---
+
+## Song Generation — Sequence Diagram
+
+The full lifecycle of a Suno song generation request, from the browser POST to audio being playable in the library.
+
+```mermaid
+sequenceDiagram
+    actor User as Browser (User)
+    participant View as views.py
+    participant Selector as get_generator_strategy()
+    participant Strategy as SunoSongGeneratorStrategy
+    participant DB as Database
+    participant SunoAPI as Suno API (api.sunoapi.org)
+
+    Note over User,SunoAPI: Step 1 — Submit generation request
+
+    User->>View: POST /songs/generate/
+    Note right of User: {title, mood, occasion,<br/>voice_style, lyrics_mode, ...}
+    View->>DB: Library.get_or_create(owner=user)
+    DB-->>View: library (is_full=False)
+    View->>DB: Song.create(status=PENDING)
+    View->>DB: Metadata.create(song)
+    View->>DB: VoiceStyle.create(song)
+    View->>DB: Lyrics.create(song)
+    View->>Selector: get_generator_strategy("suno")
+    Selector-->>View: SunoSongGeneratorStrategy instance
+    View->>Strategy: generate(SongGenerationRequest)
+    Strategy->>SunoAPI: POST /api/v1/generate
+    Note right of Strategy: {title, style, prompt,<br/>customMode, callbackUrl}
+    SunoAPI-->>Strategy: {code:200, data:{taskId:"5c79...be8e"}}
+    Strategy-->>View: SongGenerationResult(task_id, status=PENDING)
+    View->>DB: Song.status = GENERATING
+    View->>DB: GenerationJob.create(task_id, strategy="suno", status=PENDING)
+    View-->>User: 201 {song_id, task_id, status:"PENDING"}
+
+    Note over User,SunoAPI: Step 2 — Browser polls for status (every 3 s)
+
+    loop Until SUCCESS or FAILED
+        User->>View: GET /songs/{id}/generation-status/
+        View->>DB: GenerationJob.get(song)
+        DB-->>View: job (status=PENDING/TEXT_SUCCESS/FIRST_SUCCESS)
+        View->>Strategy: get_status("5c79...be8e")
+        Strategy->>SunoAPI: GET /api/v1/generate/record-info?taskId=...
+        SunoAPI-->>Strategy: {data:{status:"TEXT_SUCCESS", response:{sunoData:[...]}}}
+        Strategy-->>View: SongGenerationResult(status=TEXT_SUCCESS, audio_url="")
+        View->>DB: GenerationJob.status = TEXT_SUCCESS
+        View-->>User: {status:"TEXT_SUCCESS", audio_url:null}
+        Note right of User: Song stays GENERATING.<br/>Spinner keeps running.
+    end
+
+    Note over User,SunoAPI: Step 3 — Suno pushes webhook when complete
+
+    SunoAPI->>View: POST /suno/callback/
+    Note right of SunoAPI: {code:200, data:{callbackType:"complete",<br/>task_id, data:[{audio_url}]}}
+    View->>DB: GenerationJob.status = SUCCESS
+    View->>DB: GenerationJob.audio_url = "https://cdn.../track.mp3"
+    View->>DB: Song.status = COMPLETED
+    View-->>SunoAPI: 200 {ok:true}
+
+    Note over User,SunoAPI: Step 4 — Poll detects SUCCESS
+
+    User->>View: GET /songs/{id}/generation-status/
+    View->>DB: GenerationJob.get(song)
+    DB-->>View: job (status=SUCCESS, audio_url="https://cdn.../track.mp3")
+    View-->>User: {status:"SUCCESS", audio_url:"https://cdn.../track.mp3"}
+    Note right of User: JS calls viewSong() → shows<br/>inline player in library.
+
+    Note over User,SunoAPI: Step 5 — User views song detail
+
+    User->>View: GET /songs/{id}/
+    View->>DB: Song.get(pk, library__owner=user)
+    DB-->>View: song + generation_job.audio_url
+    View-->>User: {id, metadata, audio_url:"https://cdn.../track.mp3"}
+    Note right of User: Audio element src set.<br/>Play button visible.
+
+    Note over User,SunoAPI: Step 6 — User downloads the song
+
+    User->>View: GET /songs/{id}/download/
+    View->>SunoAPI: GET https://cdn.../track.mp3  (server-side proxy)
+    SunoAPI-->>View: audio bytes (stream)
+    View-->>User: StreamingHttpResponse
+    Note right of View: Content-Disposition: attachment;<br/>filename="title.mp3"
+```
+
+### Sequence notes
+
+| Step | Detail |
+|---|---|
+| **Polling vs Callback** | Both paths update the job. The webhook (Step 3) is the fast path. Polling (Step 2) is the fallback when the callback URL is not publicly reachable (e.g. local dev). |
+| **Intermediate states** | `TEXT_SUCCESS` and `FIRST_SUCCESS` update `GenerationJob` only — `Song.status` stays `GENERATING` until `SUCCESS` or `FAILED`. |
+| **Timeout** | Jobs older than 10 minutes that are still non-terminal are automatically marked `FAILED` by the status view. |
+| **Download proxy** | Suno hosts audio on its own CDN. The `<a download>` attribute is ignored cross-origin, so the server fetches the CDN URL and streams the bytes back with `Content-Disposition: attachment`. The CDN URL is never exposed to the browser. |
+
+---
+
+## Domain Models
 
 | Model | Description | Key Constraints |
 |---|---|---|
@@ -148,22 +411,16 @@ Adapted from the Exercise 2 domain diagram with implementation-driven refinement
 
 ## Domain Model Changes from Exercise 2
 
-The following diagram reflects the **implemented** model. Differences from the Exercise 2 submission are explained in the table below.
-
-![domain diagram](https://github.com/TTKTako/SoftwareDesign-Ex3/blob/main/diagram.png)
-
-### Change Log vs Exercise 2
-
 | # | Exercise 2 Entity | Change | Justification |
 |---|---|---|---|
-| 1 | `AuthenticatedUser` / `Guest` (two subtypes of `User`) | Merged into a single `User` model | Django's built-in session framework already distinguishes authenticated vs. unauthenticated requests at the view layer via `request.user.is_authenticated`. A separate `Guest` DB row has no persistent attributes and would be empty; an inheritance table adds schema complexity with zero benefit. |
-| 2 | `AudioPlayer` | Removed from DB layer | `AudioPlayer` is a front-end UI component (HTML5 `<audio>` element). It holds no data that needs to be persisted — playback position, volume, etc. are ephemeral browser state. |
-| 3 | `AIGenerationAPI` | Removed from DB layer | The AI service is an external third-party API. It has no persistent attributes of its own in our schema. Its interaction is represented by the `Song.status` lifecycle (`PENDING → GENERATING → COMPLETED / FAILED`), which gives the UI all the feedback described in FR-2.6 and FR-2.7. |
-| 4 | `Song` (no status) | Added `status` field (`TextChoices`: PENDING, GENERATING, COMPLETED, FAILED) | Required to implement background generation (FR-2.7), visual loading feedback (FR-2.6), and to filter the library view to show only completed songs (FR-3.3). |
-| 5 | `Song` (no file) | Added `audio_file` (FileField) and `created_at` (DateTime) | `audio_file` stores the path to the generated audio on disk, required for playback (FR-4.x) and download (FR-5.1). `created_at` is needed for the library listing which displays creation date (FR-3.3). |
-| 6 | `Metadata` (generic attributes) | Made `mood` and `occasion` concrete `TextChoices` enums | FR-2.2 lists specific valid values for mood and occasion. Using enums enforces data integrity at the DB level and drives the UI drop-downs deterministically. |
-| 7 | `Lyrics` (implicit) | Added explicit `mode` (`TextChoices`: CUSTOM, AI_GENERATED, INSTRUMENTAL) and `content` | FR-2.4 and FR-2.5 require distinguishing between user-provided, AI-generated, and instrumental songs. The original diagram named the class but did not specify how these three cases were differentiated. |
-| 8 | `VoiceStyle` (generic) | Added `style` as `TextChoices` (MALE, FEMALE, ROBOTIC, DUET) | FR-2.3 defines exactly four voice options. Enumerating them in code prevents invalid values and drives UI selection. |
+| 1 | `AuthenticatedUser` / `Guest` (two subtypes) | Merged into a single `User` model | Django's session framework distinguishes authenticated vs. unauthenticated at the view layer via `request.user.is_authenticated`. A separate `Guest` row has no persistent attributes. |
+| 2 | `AudioPlayer` | Removed from DB layer | Front-end UI component only (HTML5 `<audio>`). Playback state is ephemeral browser state. |
+| 3 | `AIGenerationAPI` | Removed from DB layer | External service with no persistent attributes of its own. Interaction is represented by `Song.status` and `GenerationJob`. |
+| 4 | `Song` (no status) | Added `status` field (`PENDING → GENERATING → COMPLETED / FAILED`) | Required for background generation (FR-2.7) and library filtering (FR-3.3). |
+| 5 | `Song` (no file) | Added `audio_file` and `created_at` | `audio_file` stores the path to generated audio; `created_at` is needed for library listing date (FR-3.3). |
+| 6 | `Metadata` (generic) | Made `mood` and `occasion` concrete `TextChoices` enums | FR-2.2 defines specific valid values. Enums enforce DB-level data integrity. |
+| 7 | `Lyrics` (implicit) | Added explicit `mode` (`CUSTOM / AI_GENERATED / INSTRUMENTAL`) and `content` | FR-2.4/2.5 require distinguishing the three lyrics cases. |
+| 8 | `VoiceStyle` (generic) | Added `style` as `TextChoices` (`MALE / FEMALE / ROBOTIC / DUET`) | FR-2.3 defines exactly four options. |
 
 ---
 
@@ -171,215 +428,38 @@ The following diagram reflects the **implemented** model. Differences from the E
 
 ### Django Admin (full CRUD)
 
-Log in at `/admin/` with the superuser credentials.  
-All seven domain models are registered with search, filter, and inline editing.  
-`Song` admin embeds `Metadata`, `VoiceStyle`, and `Lyrics` as inline forms.
+Log in at `/admin/` with superuser credentials. All domain models are registered with search, filter, and inline editing. `Song` admin embeds `Metadata`, `VoiceStyle`, and `Lyrics` as inline forms.
 
 ### API Endpoints
 
 | Endpoint | Method | Auth | Description |
 |---|---|---|---|
-| `/library/` | GET | Yes | List all completed songs in the user's library |
+| `/library/` | GET | Yes | Render library page (HTML) |
+| `/library/api/` | GET | Yes | List all completed songs as JSON |
 | `/songs/<id>/` | GET | Yes | Full detail for a specific song (owner only) |
-| `/songs/generate/` | POST | Yes | Create a song and trigger generation (Strategy Pattern) |
+| `/songs/generate/` | POST | Yes | Create a song and trigger generation |
 | `/songs/<id>/generation-status/` | GET | Yes | Poll the current generation status |
-| `/share/<uuid>/` | GET | No* | Public metadata; audio URL only for logged-in users |
+| `/songs/<id>/download/` | GET | Yes | Stream audio as a download attachment |
+| `/songs/<id>/delete/` | DELETE | Yes | Delete a song (owner only) |
+| `/share/<uuid>/` | GET | No* | Public share page (metadata for all; audio for logged-in) |
+| `/suno/callback/` | POST | No† | Suno webhook — updates job on completion |
 
-*Guests see metadata; must log in to receive the audio stream URL (FR-5.3).
+\* Guests see metadata; must log in to hear audio (FR-5.3).  
+† CSRF-exempt; validated by matching `task_id` against existing `GenerationJob` rows.
 
 ---
 
 ## Security Notes
 
-- `AUTH_USER_MODEL = 'music.User'` — custom user model, ready for Argon2 and OAuth integration.
+- `AUTH_USER_MODEL = 'music.User'` — custom user model, ready for Argon2 and OAuth.
 - Private songs cannot be accessed via URL manipulation; `song_detail_view` filters by `library__owner`.
-- `SharedLink.token` is a UUID generated server-side (`editable=False`).
-- API keys for the AI service must be stored in environment variables (never committed).
-
----
-
-## Tests
-
-### How to Run
-
-```bash
-# From the project root (with venv activated):
-python manage.py test music --verbosity=2
-```
-
-Expected final output:
-```
-Ran 50 tests in ~30s
-OK
-```
-
-Django creates a **temporary in-memory test database**, runs all tests, then destroys it — the production `db.sqlite3` is never touched.
-
----
-
-### Test Groups and Expected Results
-
-#### 1. `UserModelTests` — User model creation
-
-| Test | What it does | Expected result |
-|---|---|---|
-| `test_create_user` | Creates a User and checks the record in DB | 1 user saved; password is hashed (not plain text) |
-| `test_user_fields` | Sets first_name, last_name, email and re-reads from DB | All three fields persisted correctly |
-
----
-
-#### 2. `LibraryModelTests` — Library ownership and capacity
-
-| Test | What it does | Expected result |
-|---|---|---|
-| `test_library_created_and_owned` | Creates a Library linked to a User | `library.owner` matches the user; 0 songs |
-| `test_library_is_not_full_below_limit` | Adds 19 songs directly | `is_full` returns `False` |
-| `test_library_is_full_at_limit` | Adds exactly 20 songs directly | `is_full` returns `True` |
-
----
-
-#### 3. `SongLimitTests` — 20-song hard cap (FR-2.1 / domain constraint)
-
-| Test | What it does | Expected result |
-|---|---|---|
-| `test_song_created_within_limit` | Saves the 20th song via `song.save()` | Succeeds; library has 20 songs |
-| `test_song_blocked_over_limit` | Tries to save a 21st song via `song.save()` | `ValidationError` raised; count stays at 20 |
-| `test_song_private_by_default` | Creates a Song with no explicit privacy setting | `is_private == True` |
-
----
-
-#### 4. `MetadataModelTests` — Metadata composition
-
-| Test | What it does | Expected result |
-|---|---|---|
-| `test_metadata_created_and_linked` | Attaches Metadata (title, mood, occasion) to a Song | `song.metadata.title` readable; back-reference `meta.song` correct |
-| `test_song_str_uses_metadata_title` | Calls `str(song)` after attaching Metadata | Returns `"Summer Vibes"` (the Metadata title) |
-
----
-
-#### 5. `VoiceStyleModelTests` — Voice style choices
-
-| Test | What it does | Expected result |
-|---|---|---|
-| `test_voice_style_choices` | Creates one Song per style: Male, Female, Robotic, Duet | Each `VoiceStyle` saved with the correct `style` value |
-
----
-
-#### 6. `LyricsModelTests` — Lyrics modes
-
-| Test | What it does | Expected result |
-|---|---|---|
-| `test_custom_lyrics` | Creates Lyrics with `mode=custom` and text content | Mode and content persisted correctly |
-| `test_instrumental_lyrics_empty_content` | Creates Lyrics with `mode=instrumental` and empty content | Content is `""`, mode is `instrumental` |
-| `test_ai_generated_lyrics_default` | Creates Lyrics without specifying mode | Default mode is `ai_generated` |
-
----
-
-#### 7. `SharedLinkModelTests` — Secure share token
-
-| Test | What it does | Expected result |
-|---|---|---|
-| `test_shared_link_token_is_uuid` | Creates a SharedLink | `token` is a valid `uuid.UUID` instance |
-| `test_shared_link_tokens_are_unique` | Creates two SharedLinks | Both tokens are different |
-| `test_shared_link_deletes_with_song` | Deletes a Song that owns a SharedLink | SharedLink is also removed (CASCADE) |
-
----
-
-#### 8. `CRUDOperationsTests` — Full ORM Create / Read / Update / Delete
-
-| Test | What it does | Expected result |
-|---|---|---|
-| `test_create_and_read_song` | Creates a Song with Metadata, VoiceStyle, Lyrics; re-reads from DB | All three composed entities readable via ORM |
-| `test_update_song_metadata` | Changes Metadata title and saves | New title persisted when re-fetched |
-| `test_delete_song` | Deletes a Song | Song and all composed records removed from DB |
-| `test_update_song_privacy` | Flips `is_private` from True to False | `is_private == False` after DB re-read |
-
----
-
-#### 9. `LibraryViewTests` — `GET /library/` authentication gate
-
-| Test | What it does | Expected result |
-|---|---|---|
-| `test_library_redirects_unauthenticated` | Requests `/library/` without logging in | 302 redirect to `/accounts/login/` |
-| `test_library_returns_200_for_authenticated_user` | Logs in and requests `/library/` | 200 OK; JSON contains `songs` list and correct `owner` |
-| `test_library_shows_only_completed_songs` | Library has one completed and one pending song | Only the completed song appears in the response |
-
----
-
-#### 10. `SongDetailViewTests` — `GET /songs/<id>/` ownership check
-
-| Test | What it does | Expected result |
-|---|---|---|
-| `test_song_detail_returns_full_data_for_owner` | Owner requests their own song | 200 OK; metadata, voice_style, lyrics all in JSON |
-| `test_song_detail_blocked_for_non_owner` | Different authenticated user requests a song they don't own | 404 Not Found (ownership enforced at DB query level) |
-| `test_song_detail_redirects_unauthenticated` | Unauthenticated request | 302 redirect to login |
-
----
-
-#### 11. `SharedLinkViewTests` — `GET /share/<uuid>/` guest vs authenticated access (FR-5.3)
-
-| Test | What it does | Expected result |
-|---|---|---|
-| `test_guest_sees_metadata_no_audio` | Guest visits a public shared link | 200 OK; song title/mood present; `audio_url` is `null`; login prompt message included |
-| `test_authenticated_user_receives_audio_url_field` | Logged-in user visits a shared link | 200 OK; `audio_url` key present; no login message |
-| `test_private_song_hidden_from_guest` | Guest visits a shared link for a **private** song | 404 Not Found |
-
----
-
-#### 12. `MockStrategyUnitTests` — Mock strategy (no DB / no HTTP)
-
-| Test | What it does | Expected result |
-|---|---|---|
-| `test_generate_returns_success` | Calls `generate()` | `status == "SUCCESS"` immediately |
-| `test_generate_returns_mock_task_id` | Calls `generate()` | `task_id` starts with `"mock-"` |
-| `test_generate_returns_audio_url` | Calls `generate()` | `audio_url` is a non-empty HTTP URL |
-| `test_generate_is_deterministic_format` | Calls `generate()` twice | Both return `SUCCESS` |
-| `test_get_status_returns_success_for_mock_task` | Passes a mock task_id to `get_status()` | `SUCCESS` |
-| `test_get_status_fails_for_non_mock_task_id` | Passes a foreign task_id to `get_status()` | `FAILED` with error message |
-| `test_mock_implements_abstract_interface` | Checks class hierarchy | `MockSongGeneratorStrategy` is a `SongGeneratorStrategy` |
-
----
-
-#### 13. `StrategySelectorTests` — Centralised factory
-
-| Test | What it does | Expected result |
-|---|---|---|
-| `test_selector_returns_mock_by_default` | `GENERATOR_STRATEGY=mock` in settings | Returns `MockSongGeneratorStrategy` |
-| `test_selector_is_case_insensitive` | Passes `"MOCK"` | Returns `MockSongGeneratorStrategy` |
-| `test_selector_raises_for_unknown_strategy` | Passes `"nonexistent"` | `ValueError` raised |
-| `test_explicit_name_overrides_settings` | Passes `"mock"` explicitly | Returns `MockSongGeneratorStrategy` |
-
----
-
-#### 14. `GenerateSongViewTests` — `POST /songs/generate/`
-
-| Test | What it does | Expected result |
-|---|---|---|
-| `test_generate_creates_song_and_job` | Valid POST with mock strategy | 201; Song + GenerationJob created; `status == "SUCCESS"` |
-| `test_generate_requires_title` | POST with no `title` | 400 with `"title"` in error |
-| `test_generate_rejects_invalid_mood` | POST with `mood="not_a_mood"` | 400 |
-| `test_generate_requires_authentication` | Unauthenticated POST | 302 redirect to login |
-| `test_generate_rejects_malformed_json` | Non-JSON body | 400 |
-
----
-
-#### 15. `GenerationStatusViewTests` — `GET /songs/<pk>/generation-status/`
-
-| Test | What it does | Expected result |
-|---|---|---|
-| `test_status_returns_success_for_completed_job` | Song with `SUCCESS` job | 200; `status == "SUCCESS"` and `audio_url` present |
-| `test_status_404_for_song_without_job` | Song has no `GenerationJob` | 404 |
-| `test_status_404_for_other_users_song` | Request for another user's song | 404 |
-| `test_status_requires_authentication` | Unauthenticated request | 302 redirect to login |
+- `SharedLink.token` is a server-side UUID (`editable=False`). Possessing the token is sufficient authorisation for metadata; audio requires login.
+- API keys are stored in environment variables (never committed or exposed to the client).
+- Download view proxy-streams Suno audio server-side — the CDN URL and API key are never sent to the browser.
 
 ---
 
 ## Song Generation — Strategy Pattern
-
-The generation component uses the **Strategy design pattern** so that the generation
-behaviour can be swapped at runtime without changing any domain or view code.
-
-### How It Works
 
 ```
 music/generation/
@@ -390,20 +470,7 @@ music/generation/
 └── __init__.py          ← public API surface
 ```
 
-The `GenerationJob` model (migration `0002`) persists the external task ID, strategy
-name, and lifecycle status for each song, decoupling generation tracking from the
-`Song` model itself.
-
----
-
-### Generation API Endpoints
-
-| Endpoint | Method | Auth | Description |
-|---|---|---|---|
-| `/songs/generate/` | POST | Yes | Create a song and trigger generation |
-| `/songs/<id>/generation-status/` | GET | Yes | Poll the current generation status |
-
-#### POST `/songs/generate/` — request body
+### POST `/songs/generate/` — request body
 
 ```json
 {
@@ -423,128 +490,31 @@ Valid enum values:
 - `voice_style`: `male` `female` `robotic` `duet`
 - `lyrics_mode`: `custom` `ai_generated` `instrumental`
 
----
-
 ### Running in Mock Mode (offline, no API key needed)
 
-Mock mode is the **default**.  No changes to `.env` are required.
-
-```bash
-# .env (default)
+```env
 GENERATOR_STRATEGY=mock
 ```
 
 ```bash
-# Apply the new migration first
 python manage.py migrate
-
-# Start the server
 python manage.py runserver
 ```
-
-Send a test request (requires a logged-in session cookie; use Django shell or
-`curl` with session auth):
-
-```bash
-curl -X POST http://127.0.0.1:8000/songs/generate/ \
-  -H "Content-Type: application/json" \
-  -b "sessionid=<your-session-id>" \
-  -d '{"title": "Mock Test Song", "mood": "happy", "occasion": "general",
-       "voice_style": "female", "lyrics_mode": "ai_generated"}'
-```
-
-Example response:
-
-```json
-{
-    "song_id": 1,
-    "task_id": "mock-3f8a1c2b9d4e",
-    "status": "SUCCESS",
-    "audio_url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
-    "error": null,
-    "strategy": "mock"
-}
-```
-
-Check generation status (already SUCCESS for mock):
-
-```bash
-curl http://127.0.0.1:8000/songs/1/generation-status/ \
-  -b "sessionid=<your-session-id>"
-```
-
----
 
 ### Running in Suno Mode (live API)
 
-#### 1. Obtain a Suno API key
-
-Sign up at <https://sunoapi.org/api-key> and copy your key.
-
-#### 2. Configure `.env`
+1. Get a key at <https://sunoapi.org/api-key>
+2. Set in `.env`:
 
 ```env
-SECRET_KEY="django-insecure-your-secret-key"
 GENERATOR_STRATEGY=suno
 SUNO_API_KEY=your-actual-suno-api-key-here
+SUNO_CALLBACK_URL=https://your-public-server.com/suno/callback/
 ```
 
-> **Never commit `.env` to version control.**  It is listed in `.gitignore`.
-> Use `.env.example` as a template.
+3. Start the server: `python manage.py runserver`
 
-#### 3. Start the server
-
-```bash
-python manage.py runserver
-```
-
-#### 4. Trigger generation
-
-```bash
-curl -X POST http://127.0.0.1:8000/songs/generate/ \
-  -H "Content-Type: application/json" \
-  -b "sessionid=<your-session-id>" \
-  -d '{"title": "Suno Test Song", "mood": "energetic", "occasion": "party",
-       "voice_style": "female", "lyrics_mode": "ai_generated",
-       "theme": "An upbeat party anthem"}'
-```
-
-Example response (Suno returns PENDING immediately):
-
-```json
-{
-    "song_id": 2,
-    "task_id": "5c79xxxxxxxxxxbe8e",
-    "status": "PENDING",
-    "audio_url": null,
-    "error": null,
-    "strategy": "suno"
-}
-```
-
-#### 5. Poll for status
-
-Suno generation typically completes in 30–180 seconds.
-
-```bash
-curl http://127.0.0.1:8000/songs/2/generation-status/ \
-  -b "sessionid=<your-session-id>"
-```
-
-When the track is ready, `status` will be `SUCCESS` and `audio_url` will contain
-the generated MP3 link:
-
-```json
-{
-    "song_id": 2,
-    "task_id": "5c79xxxxxxxxxxbe8e",
-    "status": "SUCCESS",
-    "audio_url": "https://cdn2.suno.ai/generated-track.mp3",
-    "song_status": "completed"
-}
-```
-
----
+> In local dev the callback URL is not reachable by Suno — the browser polling fallback will still pick up the final status.
 
 ### Where the Suno API Key Lives
 
@@ -552,9 +522,48 @@ the generated MP3 link:
 |---|---|
 | `.env` file (project root) | Your local secret — **never committed** |
 | `settings.SUNO_API_KEY` | Read from `os.getenv("SUNO_API_KEY", "")` |
-| `SunoSongGeneratorStrategy.__init__` | Validated at construction time |
+| `SunoSongGeneratorStrategy.__init__` | Validated at construction time; raises `ValueError` if missing |
 
-The `.gitignore` (or your VCS ignore rules) must exclude `.env`.  
-Use `.env.example` as the committed template so collaborators know which
-variables are expected without exposing real credentials.
+---
+
+## Tests
+
+### How to Run
+
+```bash
+python manage.py test music --verbosity=2
+```
+
+Expected output:
+```
+Ran 86 tests in ~6s
+OK
+```
+
+### Test Groups
+
+| # | Class | Tests | What is covered |
+|---|---|---|---|
+| 1 | `UserModelTests` | 2 | User creation, field persistence |
+| 2 | `LibraryModelTests` | 3 | Ownership, capacity (`is_full`) |
+| 3 | `SongLimitTests` | 3 | 20-song hard cap, private-by-default |
+| 4 | `MetadataModelTests` | 2 | Metadata composition, `__str__` |
+| 5 | `VoiceStyleModelTests` | 1 | All four style choices |
+| 6 | `LyricsModelTests` | 3 | Custom / instrumental / AI-generated modes |
+| 7 | `SharedLinkModelTests` | 3 | UUID uniqueness, CASCADE delete |
+| 8 | `CRUDOperationsTests` | 4 | Full ORM create / read / update / delete |
+| 9 | `LibraryViewTests` | 3 | Auth gate, completed-songs filter |
+| 10 | `SongDetailViewTests` | 3 | Ownership check, unauthenticated redirect |
+| 11 | `SharedLinkViewTests` | 3 | Guest metadata-only, token authorisation |
+| 12 | `MockStrategyUnitTests` | 7 | Mock strategy offline behaviour |
+| 13 | `StrategySelectorTests` | 4 | Factory, case-insensitive, unknown strategy error |
+| 14 | `GenerateSongViewTests` | 5 | Validation, song + job creation, auth gate |
+| 15 | `GenerationStatusViewTests` | 4 | Poll endpoint, terminal states, ownership |
+| 16 | `DeleteSongViewTests` | 4 | Delete owner-only, cascade, auth gate |
+| 17 | `ShareSongViewTests` | 4 | Share link creation, idempotence |
+| 18 | `TogglePrivacyViewTests` | 4 | Flip `is_private`, ownership check |
+| 19 | `DownloadSongViewTests` | 4 | Streaming proxy, no-audio 404, auth gate |
+| 20 | `GenerateNullThemeRegressionTests` | 2 | `theme=null` IntegrityError regression |
+| 21 | `SunoCallbackAtomicTests` | 4 | Callback parsing, intermediate states, idempotency |
+
 
