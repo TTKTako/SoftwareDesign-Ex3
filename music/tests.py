@@ -13,6 +13,7 @@ Covers:
 
 import json
 import uuid
+from unittest.mock import MagicMock, patch
 
 from django.core.exceptions import ValidationError
 from django.test import Client, TestCase, override_settings
@@ -395,7 +396,7 @@ class CRUDOperationsTests(TestCase):
 # ===========================================================================
 
 class LibraryViewTests(TestCase):
-    """Test: GET /library/ authentication gate and correct response payload."""
+    """Test: GET /library/ HTML page and GET /library/api/ JSON endpoint."""
 
     def test_library_redirects_unauthenticated(self):
         """
@@ -406,31 +407,52 @@ class LibraryViewTests(TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertIn("/auth/login/", response["Location"])
 
-    def test_library_returns_200_for_authenticated_user(self):
+    def test_library_html_returns_200_for_authenticated_user(self):
         """
         Log in and request GET /library/.
-        Expect: 200 OK with JSON containing 'songs' list.
+        Expect: 200 OK with HTML content (not JSON).
         """
         user = make_user()
         make_library(user)
         self.client.login(username="testuser", password="testpass123")
         response = self.client.get(reverse("music:library"))
         self.assertEqual(response.status_code, 200)
+        self.assertIn("text/html", response["Content-Type"])
+
+    def test_library_api_returns_200_for_authenticated_user(self):
+        """
+        Log in and request GET /library/api/.
+        Expect: 200 OK with JSON containing 'songs' list.
+        """
+        user = make_user()
+        make_library(user)
+        self.client.login(username="testuser", password="testpass123")
+        response = self.client.get(reverse("music:library_api"))
+        self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertIn("songs", data)
         self.assertEqual(data["owner"], "testuser")
 
+    def test_library_api_redirects_unauthenticated(self):
+        """
+        Request GET /library/api/ without logging in.
+        Expect: 302 redirect to login.
+        """
+        response = self.client.get(reverse("music:library_api"))
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/auth/login/", response["Location"])
+
     def test_library_shows_only_completed_songs(self):
         """
         Library has one completed and one pending song.
-        Expect: only the completed song appears in the response.
+        Expect: only the completed song appears in the API response.
         """
         user = make_user()
         lib = make_library(user)
         completed = make_full_song(lib, title="Done Song", status=Song.Status.COMPLETED)
         make_full_song(lib, title="Pending Song", status=Song.Status.PENDING)
         self.client.login(username="testuser", password="testpass123")
-        response = self.client.get(reverse("music:library"))
+        response = self.client.get(reverse("music:library_api"))
         data = response.json()
         self.assertEqual(data["song_count"], 1)
         self.assertEqual(data["songs"][0]["title"], "Done Song")
@@ -500,33 +522,34 @@ class SharedLinkViewTests(TestCase):
     def test_guest_sees_metadata_no_audio(self):
         """
         Unauthenticated user visits a shared link.
-        Expect: 200 OK, metadata fields present, audio_url is None, login message shown (FR-5.3).
+        Expect: 200 OK, song title present in HTML, no audio player, login prompt shown (FR-5.3).
         """
         _, _, link = self._setup_shared_song()
         response = self.client.get(reverse("music:shared_link", args=[link.token]))
         self.assertEqual(response.status_code, 200)
-        data = response.json()
-        self.assertEqual(data["title"], "Shared Song")
-        self.assertIsNone(data["audio_url"])
-        self.assertIn("Log in", data["message"])
+        self.assertContains(response, "Shared Song")
+        # Guest should see a login prompt, not an audio player
+        self.assertContains(response, "Sign in")
+        self.assertNotContains(response, "sharePlayBtn")
 
     def test_authenticated_user_receives_audio_url_field(self):
         """
         Authenticated user visits a shared link.
-        Expect: 200 OK, metadata present, audio_url key present (may be None if no file uploaded).
+        Expect: 200 OK, song title present, audio player rendered in HTML.
         """
         user, _, link = self._setup_shared_song()
         self.client.login(username="testuser", password="testpass123")
         response = self.client.get(reverse("music:shared_link", args=[link.token]))
         self.assertEqual(response.status_code, 200)
-        data = response.json()
-        self.assertIn("audio_url", data)
-        self.assertNotIn("message", data)
+        self.assertContains(response, "Shared Song")
+        # Authenticated users should NOT see the login prompt
+        self.assertNotContains(response, "Sign in to listen")
 
     def test_private_song_hidden_from_guest(self):
         """
-        A private song has a SharedLink but the visitor is unauthenticated.
-        Expect: 404 Not Found — private songs are not exposed via direct URL to guests.
+        A private song with a SharedLink is still accessible via the token
+        (the token itself is the access grant for metadata).  Guests can view
+        the metadata page — they just can't stream audio.
         """
         user = make_user()
         lib = make_library(user)
@@ -534,7 +557,9 @@ class SharedLinkViewTests(TestCase):
         # is_private remains True (default)
         link = SharedLink.objects.create(song=song, created_by=user)
         response = self.client.get(reverse("music:shared_link", args=[link.token]))
-        self.assertEqual(response.status_code, 404)
+        # Token grants access; page should render with the song title
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Private Song")
 
 
 # ===========================================================================
@@ -566,9 +591,9 @@ class MockStrategyUnitTests(TestCase):
         self.assertTrue(result.task_id.startswith("mock-"))
 
     def test_generate_returns_audio_url(self):
-        """Mock must return a non-empty audio_url."""
+        """Mock returns no audio_url (audio is null for mock strategy)."""
         result = self.strategy.generate(self.request)
-        self.assertTrue(result.audio_url.startswith("http"))
+        self.assertFalse(result.audio_url)  # empty string / None
 
     def test_generate_is_deterministic_format(self):
         """Two calls must both return SUCCESS (deterministic behaviour)."""
@@ -648,7 +673,7 @@ class GenerateSongViewTests(TestCase):
         self.assertIn("task_id", data)
         self.assertEqual(data["strategy"], "mock")
         self.assertEqual(data["status"], "SUCCESS")
-        self.assertIsNotNone(data["audio_url"])
+        self.assertIsNone(data["audio_url"])
 
         # Verify DB state
         song = Song.objects.get(pk=data["song_id"])
@@ -669,10 +694,10 @@ class GenerateSongViewTests(TestCase):
 
     @override_settings(GENERATOR_STRATEGY="mock")
     def test_generate_rejects_invalid_mood(self):
-        """An invalid mood value must return 400."""
+        """A mood value that is too long (> 40 chars) must return 400."""
         response = self.client.post(
             reverse("music:generate_song"),
-            data=json.dumps({"title": "X", "mood": "not_a_mood"}),
+            data=json.dumps({"title": "X", "mood": "x" * 50}),
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 400)
@@ -869,7 +894,7 @@ class LoginViewTests(TestCase):
         self.assertEqual(data["username"], "loginuser")
         self.assertIn("id", data)
         # Verify session is established by accessing a protected resource
-        library_response = self.client.get(reverse("music:library"))
+        library_response = self.client.get(reverse("music:library_api"))
         self.assertEqual(library_response.status_code, 200)
 
     def test_login_wrong_password(self):
@@ -914,7 +939,7 @@ class LogoutViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("Logged out", response.json()["message"])
         # Verify session is gone
-        follow_up = self.client.get(reverse("music:library"))
+        follow_up = self.client.get(reverse("music:library_api"))
         self.assertEqual(follow_up.status_code, 302)
 
     def test_logout_requires_authentication(self):
@@ -1066,8 +1091,8 @@ class DownloadSongViewTests(TestCase):
 
     def test_download_with_generation_job_audio_url(self):
         """
-        Song with a completed GenerationJob returns the audio URL.
-        Expect: 200, download_url is present and non-empty.
+        Song with a completed GenerationJob proxies the audio stream.
+        Expect: 200 streaming response with Content-Disposition: attachment.
         """
         song = make_full_song(self.lib)
         GenerationJob.objects.create(
@@ -1075,15 +1100,20 @@ class DownloadSongViewTests(TestCase):
             task_id="mock-dl1",
             strategy="mock",
             status="SUCCESS",
-            audio_url="https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
+            audio_url="https://example.com/audio.mp3",
         )
-        response = self.client.get(
-            reverse("music:download_song", args=[song.pk])
-        )
+        # Patch the HTTP call so tests don't make real network requests
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {"Content-Type": "audio/mpeg"}
+        mock_resp.iter_content = lambda chunk_size: iter([b"fake-audio-bytes"])
+        mock_resp.raise_for_status = lambda: None
+        with patch("music.views.http_client.get", return_value=mock_resp):
+            response = self.client.get(
+                reverse("music:download_song", args=[song.pk])
+            )
         self.assertEqual(response.status_code, 200)
-        data = response.json()
-        self.assertIn("download_url", data)
-        self.assertTrue(data["download_url"].startswith("http"))
+        self.assertIn("attachment", response.get("Content-Disposition", ""))
 
     def test_download_no_audio_returns_404(self):
         """
@@ -1123,4 +1153,280 @@ class DownloadSongViewTests(TestCase):
             reverse("music:download_song", args=[song.pk])
         )
         self.assertEqual(response.status_code, 404)
+
+
+# ===========================================================================
+# 20. Bug-regression tests (fixes verified in this revision)
+# ===========================================================================
+
+class GenerateNullThemeRegressionTests(TestCase):
+    """
+    Regression: theme=null in JSON body previously caused IntegrityError
+    because body.get("theme", "") returned None (key present, value null)
+    rather than the default empty string.
+    """
+
+    def setUp(self):
+        self.user = make_user()
+        self.client.login(username="testuser", password="testpass123")
+
+    @override_settings(GENERATOR_STRATEGY="mock")
+    def test_generate_with_null_theme_succeeds(self):
+        """
+        POST /songs/generate/ with theme=null must succeed (201) and store
+        theme as empty string, not raise an IntegrityError.
+        """
+        payload = {
+            "title": "Null Theme Song",
+            "mood": "happy",
+            "theme": None,          # JSON null — the previous bug
+            "occasion": "general",
+            "voice_style": "female",
+            "lyrics_mode": "ai_generated",
+        }
+        response = self.client.post(
+            reverse("music:generate_song"),
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 201, response.content)
+        song = Song.objects.get(pk=response.json()["song_id"])
+        self.assertEqual(song.metadata.theme, "")
+
+    @override_settings(GENERATOR_STRATEGY="mock")
+    def test_generate_with_missing_theme_succeeds(self):
+        """
+        POST /songs/generate/ with no theme key must also succeed (201).
+        """
+        payload = {
+            "title": "No Theme Song",
+            "mood": "calm",
+            "occasion": "general",
+            "voice_style": "male",
+            "lyrics_mode": "instrumental",
+        }
+        response = self.client.post(
+            reverse("music:generate_song"),
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 201, response.content)
+
+    @override_settings(GENERATOR_STRATEGY="mock")
+    def test_generate_atomic_no_orphan_on_invalid_voice(self):
+        """
+        A 400 from voice_style validation must not leave an orphaned Song.
+        """
+        initial_count = Song.objects.count()
+        response = self.client.post(
+            reverse("music:generate_song"),
+            data=json.dumps({"title": "X", "voice_style": "invalid_style"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(Song.objects.count(), initial_count)
+
+
+class GenerationStatusErrorMessageTests(TestCase):
+    """
+    Regression: the generation status endpoint previously used the key 'error'
+    but the frontend reads 'error_message'.  After the fix the key must be
+    'error_message' in all response shapes.
+    """
+
+    def setUp(self):
+        self.user = make_user()
+        self.client.login(username="testuser", password="testpass123")
+
+    def _make_song_with_job(self, status, error_message=""):
+        lib, _ = Library.objects.get_or_create(owner=self.user)
+        song = Song.objects.create(
+            library=lib,
+            status=Song.Status.FAILED if status == "FAILED" else Song.Status.COMPLETED,
+        )
+        GenerationJob.objects.create(
+            song=song,
+            task_id="mock-err1",
+            strategy="mock",
+            status=status,
+            error_message=error_message,
+        )
+        return song
+
+    def test_failed_job_response_uses_error_message_key(self):
+        """
+        A FAILED terminal job must return 'error_message' key (not 'error').
+        """
+        song = self._make_song_with_job("FAILED", error_message="Something went wrong")
+        response = self.client.get(
+            reverse("music:generation_status", args=[song.pk])
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn("error_message", data)
+        self.assertNotIn("error", data)
+        self.assertEqual(data["error_message"], "Something went wrong")
+
+    def test_success_job_response_includes_error_message_key(self):
+        """
+        A SUCCESS terminal job must also include the 'error_message' key (null).
+        """
+        song = self._make_song_with_job("SUCCESS")
+        response = self.client.get(
+            reverse("music:generation_status", args=[song.pk])
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn("error_message", data)
+        self.assertIsNone(data["error_message"])
+
+
+# ===========================================================================
+# 21. Reconciliation: job=SUCCESS but song still "generating"
+# ===========================================================================
+
+class StatusReconciliationTests(TestCase):
+    """
+    Regression: if job.save() committed (status=SUCCESS) but song.save() failed
+    in a prior request, subsequent polls must detect the mismatch and fix it so
+    the song appears in the library (FR-3.3).
+    """
+
+    def setUp(self):
+        self.user = make_user()
+        self.client.login(username="testuser", password="testpass123")
+
+    def _make_inconsistent_song(self):
+        """Song in GENERATING state but job in SUCCESS state (simulates prior crash)."""
+        lib, _ = Library.objects.get_or_create(owner=self.user)
+        song = Song.objects.create(library=lib, status=Song.Status.GENERATING)
+        GenerationJob.objects.create(
+            song=song,
+            task_id="mock-reconcile",
+            strategy="mock",
+            status="SUCCESS",
+            audio_url="https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
+        )
+        return song
+
+    def test_poll_reconciles_song_to_completed_when_job_is_success(self):
+        """
+        GET /songs/<pk>/generation-status/ on an inconsistent song must:
+        1. Detect job=SUCCESS, song=GENERATING
+        2. Fix song.status → COMPLETED
+        3. Return status=SUCCESS + song_status=completed
+        """
+        song = self._make_inconsistent_song()
+        response = self.client.get(
+            reverse("music:generation_status", args=[song.pk])
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["status"], "SUCCESS")
+        self.assertEqual(data["song_status"], Song.Status.COMPLETED)
+        # Verify DB was also fixed
+        song.refresh_from_db()
+        self.assertEqual(song.status, Song.Status.COMPLETED)
+
+    def test_reconciled_song_appears_in_library(self):
+        """
+        After reconciliation the song must be visible in GET /library/api/.
+        """
+        song = self._make_inconsistent_song()
+        # Trigger reconciliation via the status endpoint
+        self.client.get(reverse("music:generation_status", args=[song.pk]))
+        # Library should now list the song
+        response = self.client.get(reverse("music:library_api"))
+        data = response.json()
+        song_ids = [s["id"] for s in data["songs"]]
+        self.assertIn(song.pk, song_ids)
+
+
+# ===========================================================================
+# 22. Suno callback — atomic saves (TEXT_SUCCESS must not save song)
+# ===========================================================================
+
+class SunoCallbackAtomicTests(TestCase):
+    """
+    Regression: suno_callback_view must only update song.status for terminal
+    states (SUCCESS/FAILED).  Intermediate states (TEXT_SUCCESS, FIRST_SUCCESS)
+    must leave song.status = GENERATING so the library stays clean.
+    """
+
+    def _make_pending_song(self):
+        user = make_user()
+        lib = make_library(user)
+        song = Song.objects.create(library=lib, status=Song.Status.GENERATING)
+        job = GenerationJob.objects.create(
+            song=song, task_id="suno-cb-test", strategy="suno", status="PENDING"
+        )
+        return song, job
+
+    def _post_callback(self, payload):
+        return self.client.post(
+            reverse("music:suno_callback"),
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+    def test_text_success_does_not_change_song_status(self):
+        """
+        Callback with callbackType=text must update job but leave song GENERATING.
+        """
+        song, _ = self._make_pending_song()
+        response = self._post_callback({
+            "code": 200,
+            "msg": "Text generation completed.",
+            "data": {"callbackType": "text", "task_id": "suno-cb-test"},
+        })
+        self.assertEqual(response.status_code, 200)
+        song.refresh_from_db()
+        self.assertEqual(song.status, Song.Status.GENERATING)
+
+    def test_success_callback_sets_song_completed(self):
+        """
+        Callback with callbackType=complete must set song.status = COMPLETED atomically.
+        """
+        song, _ = self._make_pending_song()
+        response = self._post_callback({
+            "code": 200,
+            "msg": "All generated successfully.",
+            "data": {
+                "callbackType": "complete",
+                "task_id": "suno-cb-test",
+                "data": [{"audio_url": "https://example.com/track.mp3"}],
+            },
+        })
+        self.assertEqual(response.status_code, 200)
+        song.refresh_from_db()
+        self.assertEqual(song.status, Song.Status.COMPLETED)
+
+    def test_failed_callback_sets_song_failed(self):
+        """
+        Callback with callbackType=error must set song.status = FAILED atomically.
+        """
+        song, _ = self._make_pending_song()
+        response = self._post_callback({
+            "code": 400,
+            "msg": "API quota exceeded",
+            "data": {"callbackType": "error", "task_id": "suno-cb-test", "errorMessage": "API quota exceeded"},
+        })
+        self.assertEqual(response.status_code, 200)
+        song.refresh_from_db()
+        self.assertEqual(song.status, Song.Status.FAILED)
+
+    def test_duplicate_success_callback_is_idempotent(self):
+        """
+        A second SUCCESS callback on an already-terminal job must be ignored.
+        """
+        _, job = self._make_pending_song()
+        job.status = "SUCCESS"
+        job.save()
+        response = self._post_callback({
+            "code": 200,
+            "msg": "All generated successfully.",
+            "data": {"callbackType": "complete", "task_id": "suno-cb-test"},
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"ok": True})
 

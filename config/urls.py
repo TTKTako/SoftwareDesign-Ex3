@@ -24,6 +24,12 @@ urlpatterns = [
     # allauth headless API — Google OAuth + session auth (FR-1.1, FR-1.2)
     # Endpoints live at /_allauth/browser/v1/auth/...
     path('_allauth/', include('allauth.headless.urls')),
+    # allauth standard URLs — required so that reverse('google_callback') resolves
+    # when allauth builds the OAuth redirect_uri for the Google provider.
+    # With HEADLESS_ONLY=True the HTML login/signup pages are disabled;
+    # only the provider callback URL (e.g. /accounts/google/login/callback/)
+    # is actually used during the OAuth handshake.
+    path('accounts/', include('allauth.urls')),
     # Cithara music API
     path('', include('music.urls')),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

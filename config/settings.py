@@ -45,6 +45,12 @@ GENERATOR_STRATEGY = os.getenv("GENERATOR_STRATEGY", "mock")
 # NEVER commit the real key; keep it in .env (which is git-ignored).
 SUNO_API_KEY = os.getenv("SUNO_API_KEY", "")
 
+# Public URL Suno will POST the completed result to.
+# In production: https://yourserver.com/suno/callback/
+# In local dev: leave blank — Suno will try to call the fallback URL
+# (generation still works because the frontend polls /generation-status/).
+SUNO_CALLBACK_URL = os.getenv("SUNO_CALLBACK_URL", "")
+
 
 # Application definition
 
@@ -154,7 +160,8 @@ SESSION_COOKIE_HTTPONLY = True         # JS cannot access session cookie
 # ---------------------------------------------------------------------------
 SECURE_CONTENT_TYPE_NOSNIFF = True   # prevent MIME-type sniffing
 X_FRAME_OPTIONS = 'DENY'             # block clickjacking (FR-5.3, private songs)
-CSRF_COOKIE_HTTPONLY = True          # JS cannot read CSRF cookie
+# CSRF_COOKIE_HTTPONLY is intentionally left False (Django default).
+# The JS frontend reads csrftoken from the cookie to send with AJAX requests.
 # Note: SECURE_SSL_REDIRECT = True and HSTS should be enabled in production.
 # Keep False here so local development works over plain HTTP.
 
@@ -175,6 +182,8 @@ SITE_ID = 1
 # Login URL — where @login_required redirects unauthenticated requests
 # ---------------------------------------------------------------------------
 LOGIN_URL = '/auth/login/'
+LOGIN_REDIRECT_URL = '/'
+LOGOUT_REDIRECT_URL = '/auth/login/'
 
 # ---------------------------------------------------------------------------
 # allauth configuration (headless/API mode — no HTML templates)

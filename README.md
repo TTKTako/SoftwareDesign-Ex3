@@ -55,6 +55,9 @@ GENERATOR_STRATEGY=mock
 
 # Required only when GENERATOR_STRATEGY=suno
 SUNO_API_KEY=
+
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
 ```
 
 > **Never commit `.env` to version control.** It is git-ignored. Use `.env.example` as the committed template.

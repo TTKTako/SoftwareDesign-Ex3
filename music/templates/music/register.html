@@ -1,0 +1,129 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cithara — Create Account</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap">
+  <link rel="stylesheet" href="{% static 'music/css/main.css' %}">
+</head>
+<body class="auth-page">
+
+  <div class="bg-orb bg-orb-1"></div>
+  <div class="bg-orb bg-orb-2"></div>
+
+  <div class="auth-container">
+
+    <div class="auth-logo">
+      <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
+        <circle cx="16" cy="16" r="14" stroke="#f5c518" stroke-width="2"/>
+        <path d="M12 10v12M16 8v16M20 12v8" stroke="#f5c518" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+      <span>Cithara</span>
+    </div>
+
+    <h1 class="auth-title">Create your account</h1>
+    <p class="auth-subtitle">Start generating music with AI</p>
+
+    <div class="alert alert-error" id="regError" style="display:none"></div>
+    <div class="alert alert-success" id="regSuccess" style="display:none"></div>
+
+    <form class="auth-form" id="regForm" autocomplete="on">
+      <div class="field-row">
+        <div class="field-group">
+          <label class="field-label" for="firstName">First name</label>
+          <input class="field-input" id="firstName" name="first_name" type="text" placeholder="Alice">
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="lastName">Last name</label>
+          <input class="field-input" id="lastName" name="last_name" type="text" placeholder="Smith">
+        </div>
+      </div>
+
+      <div class="field-group">
+        <label class="field-label" for="username">Username <span class="field-required">*</span></label>
+        <input class="field-input" id="username" name="username" type="text"
+               placeholder="alice_smith" autocomplete="username" required>
+      </div>
+
+      <div class="field-group">
+        <label class="field-label" for="email">Email <span class="field-required">*</span></label>
+        <input class="field-input" id="email" name="email" type="email"
+               placeholder="alice@example.com" autocomplete="email" required>
+      </div>
+
+      <div class="field-group">
+        <label class="field-label" for="password">Password <span class="field-required">*</span></label>
+        <input class="field-input" id="password" name="password" type="password"
+               placeholder="At least 8 characters" autocomplete="new-password" required>
+        <div class="field-hint">Stored with Argon2 encryption</div>
+      </div>
+
+      <button class="btn-primary btn-full" type="submit" id="regBtn">
+        <span class="btn-text">Create Account</span>
+        <span class="btn-spinner" style="display:none">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" class="spinner-icon">
+            <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" stroke-dasharray="31.4" stroke-dashoffset="10"/>
+          </svg>
+        </span>
+      </button>
+    </form>
+
+    <p class="auth-footer">
+      Already have an account? <a href="/auth/login/" class="auth-link">Sign in</a>
+    </p>
+
+  </div>
+
+  <script>
+    function getCsrf() {
+      const m = document.cookie.match(/csrftoken=([^;]+)/);
+      return m ? decodeURIComponent(m[1]) : '';
+    }
+
+    document.getElementById('regForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = document.getElementById('regBtn');
+      const errEl = document.getElementById('regError');
+      const okEl = document.getElementById('regSuccess');
+      btn.querySelector('.btn-text').style.display = 'none';
+      btn.querySelector('.btn-spinner').style.display = 'inline-flex';
+      btn.disabled = true;
+      errEl.style.display = 'none';
+      okEl.style.display = 'none';
+
+      try {
+        const res = await fetch('/auth/register/', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCsrf() },
+          body: JSON.stringify({
+            username: document.getElementById('username').value,
+            password: document.getElementById('password').value,
+            email: document.getElementById('email').value,
+            first_name: document.getElementById('firstName').value,
+            last_name: document.getElementById('lastName').value,
+          }),
+        });
+        const data = await res.json();
+        if (res.ok) {
+          okEl.textContent = 'Account created! Signing you in…';
+          okEl.style.display = 'block';
+          setTimeout(() => window.location.href = '/', 1200);
+        } else {
+          errEl.textContent = data.error || 'Registration failed.';
+          errEl.style.display = 'block';
+        }
+      } catch {
+        errEl.textContent = 'Network error. Please check your connection.';
+        errEl.style.display = 'block';
+      } finally {
+        btn.querySelector('.btn-text').style.display = 'inline';
+        btn.querySelector('.btn-spinner').style.display = 'none';
+        btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

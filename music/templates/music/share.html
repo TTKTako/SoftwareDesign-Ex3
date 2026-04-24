@@ -1,0 +1,248 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% if meta %}{{ meta.title }} — {% endif %}Cithara</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap">
+  <link rel="stylesheet" href="{% static 'music/css/main.css' %}">
+</head>
+<body class="app-page">
+
+  <!-- ─── Top navigation bar ─────────────────────────────────────── -->
+  <header class="topbar">
+    <div class="topbar-logo">
+      <svg width="22" height="22" viewBox="0 0 32 32" fill="none">
+        <circle cx="16" cy="16" r="14" stroke="#f5c518" stroke-width="2"/>
+        <path d="M12 10v12M16 8v16M20 12v8" stroke="#f5c518" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+      <span>Cithara</span>
+    </div>
+    <div class="topbar-right">
+      {% if request.user.is_authenticated %}
+        <a class="btn-ghost btn-sm topbar-nav-link" href="/library/">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+            <path d="M3 3h4v4H3zM3 10h4v4H3zM3 17h4v4H3zM10 3h11v4H10zM10 10h11v4H10zM10 17h11v4H10z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          My Library
+        </a>
+        <span class="topbar-user">{{ request.user.username }}</span>
+      {% else %}
+        <a class="btn-ghost btn-sm" href="{{ login_url }}">Sign in</a>
+      {% endif %}
+    </div>
+  </header>
+
+  <!-- ─── Main content ─────────────────────────────────────────────── -->
+  <main class="share-main">
+
+    <div class="song-detail share-song-detail">
+
+      <!-- Artwork -->
+      <div class="detail-artwork-wrap">
+        <div class="detail-artwork {% if meta %}mood-{{ meta.mood }}{% endif %}" id="shareArtwork">
+          <div class="artwork-visual">
+            <svg class="artwork-icon" width="64" height="64" viewBox="0 0 24 24" fill="none">
+              <circle cx="12" cy="12" r="3" fill="currentColor"/>
+              <path d="M12 2v3M12 19v3M4.22 4.22l2.12 2.12M17.66 17.66l2.12 2.12M2 12h3M19 12h3M4.22 19.78l2.12-2.12M17.66 6.34l2.12-2.12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+          </div>
+        </div>
+
+        {% if is_owner %}
+        <!-- Owner-only action buttons -->
+        <div class="detail-actions">
+          <button class="btn-outline btn-sm" id="shareOwnerShareBtn">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+              <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8M16 6l-4-4-4 4M12 2v13" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            Share
+          </button>
+          <a class="btn-outline btn-sm" href="/library/">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+              <path d="M3 3h4v4H3zM3 10h4v4H3zM3 17h4v4H3zM10 3h11v4H10zM10 10h11v4H10zM10 17h11v4H10z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+            Library
+          </a>
+        </div>
+        {% endif %}
+      </div>
+
+      <!-- Info panel -->
+      <div class="detail-info">
+        <div class="detail-header">
+          <h1 class="detail-title">{% if meta %}{{ meta.title }}{% else %}—{% endif %}</h1>
+          <div class="detail-tags">
+            {% if meta and meta.mood %}<span class="tag tag-yellow">{{ meta.mood|capfirst }}</span>{% endif %}
+            {% if voice %}<span class="tag">{{ voice.style|capfirst }}</span>{% endif %}
+            {% if meta and meta.occasion %}<span class="tag">{{ meta.occasion|capfirst }}</span>{% endif %}
+            <span class="tag">{{ song.status|capfirst }}</span>
+          </div>
+        </div>
+
+        <div class="detail-meta-grid">
+          {% if lyrics %}
+          <div class="meta-item">
+            <span class="meta-key">Lyrics Mode</span>
+            <span class="meta-val">{{ lyrics.mode|title|cut:"_" }}</span>
+          </div>
+          {% endif %}
+          {% if meta and meta.occasion %}
+          <div class="meta-item">
+            <span class="meta-key">Occasion</span>
+            <span class="meta-val">{{ meta.occasion|capfirst }}</span>
+          </div>
+          {% endif %}
+          <div class="meta-item">
+            <span class="meta-key">Created</span>
+            <span class="meta-val">{{ song.created_at|date:"n/j/Y" }}</span>
+          </div>
+        </div>
+
+        {% if lyrics and lyrics.mode != 'instrumental' and lyrics.content %}
+        <div class="detail-lyrics-section">
+          <h3 class="detail-section-label">Lyrics</h3>
+          <pre class="detail-lyrics">{{ lyrics.content }}</pre>
+        </div>
+        {% endif %}
+
+        <!-- Audio player section -->
+        {% if audio_url %}
+        <div class="detail-player-section">
+          <h3 class="detail-section-label">Listen</h3>
+          <div class="detail-inline-player">
+            <button class="detail-inline-play-btn" id="sharePlayBtn" title="Play / Pause">
+              <svg class="icon-play" width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              <svg class="icon-pause" width="22" height="22" viewBox="0 0 24 24" fill="currentColor" style="display:none"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+            </button>
+            <div class="detail-inline-progress-wrap">
+              <input type="range" class="detail-inline-slider" id="shareProgressSlider" value="0" min="0" max="100" step="0.1">
+              <div class="detail-inline-times">
+                <span id="sharePlayerTime">0:00</span>
+                <span id="sharePlayerDur">0:00</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        {% elif not request.user.is_authenticated %}
+        <div class="share-login-prompt">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" style="color:var(--text-3)">
+            <path d="M11 5L6 9H2v6h4l5 4V5zM19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+          <div>
+            <p class="share-login-msg">Sign in to listen to this track.</p>
+            <a class="btn-primary btn-sm share-login-btn" href="{{ login_url }}">Sign in</a>
+          </div>
+        </div>
+        {% endif %}
+
+      </div><!-- /detail-info -->
+    </div><!-- /song-detail -->
+  </main>
+
+  <!-- ─── Toast notifications ──────────────────────────────────────── -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  {% if is_owner %}
+  <!-- Share modal (owner only) -->
+  <div class="modal-overlay" id="shareModal" style="display:none">
+    <div class="modal">
+      <button class="modal-close" id="shareModalClose">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+          <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+      </button>
+      <h3 class="modal-title">Share Link</h3>
+      <p class="modal-sub">Anyone with this link can view song info. Login required to listen.</p>
+      <div class="share-url-row">
+        <input class="field-input" id="shareUrlInput" type="text" value="{{ request.build_absolute_uri }}" readonly>
+        <button class="btn-primary btn-sm" id="copyShareBtn">Copy</button>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <script>
+  {% if audio_url %}
+  (function () {
+    'use strict';
+    const audio = new Audio('{{ audio_url|escapejs }}');
+    let isPlaying = false;
+
+    function fmtTime(s) {
+      if (!isFinite(s)) return '0:00';
+      return Math.floor(s / 60) + ':' + String(Math.floor(s % 60)).padStart(2, '0');
+    }
+
+    function syncIcons() {
+      const play  = document.querySelector('#sharePlayBtn .icon-play');
+      const pause = document.querySelector('#sharePlayBtn .icon-pause');
+      if (!play || !pause) return;
+      play.style.display  = isPlaying ? 'none'   : 'inline';
+      pause.style.display = isPlaying ? 'inline' : 'none';
+    }
+
+    const playBtn  = document.getElementById('sharePlayBtn');
+    const slider   = document.getElementById('shareProgressSlider');
+    const timeEl   = document.getElementById('sharePlayerTime');
+    const durEl    = document.getElementById('sharePlayerDur');
+
+    audio.addEventListener('loadedmetadata', () => { durEl.textContent = fmtTime(audio.duration); });
+    audio.addEventListener('timeupdate', () => {
+      if (!isFinite(audio.duration)) return;
+      const pct = (audio.currentTime / audio.duration) * 100;
+      slider.value = pct;
+      timeEl.textContent = fmtTime(audio.currentTime);
+    });
+    audio.addEventListener('ended', () => { isPlaying = false; syncIcons(); });
+
+    playBtn.addEventListener('click', () => {
+      if (isPlaying) { audio.pause(); isPlaying = false; }
+      else { audio.play().catch(() => {}); isPlaying = true; }
+      syncIcons();
+    });
+
+    slider.addEventListener('input', () => {
+      if (!isFinite(audio.duration)) return;
+      audio.currentTime = (slider.value / 100) * audio.duration;
+    });
+  })();
+  {% endif %}
+
+  {% if is_owner %}
+  (function () {
+    function getCsrf() {
+      const m = document.cookie.match(/csrftoken=([^;]+)/);
+      return m ? decodeURIComponent(m[1]) : '';
+    }
+    function toast(msg, type) {
+      const c = document.getElementById('toastContainer');
+      const el = document.createElement('div');
+      el.className = 'toast toast-' + (type || 'info');
+      el.textContent = msg;
+      c.appendChild(el);
+      setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity 0.3s'; }, 3200);
+      setTimeout(() => el.remove(), 3600);
+    }
+    const shareBtn   = document.getElementById('shareOwnerShareBtn');
+    const shareModal = document.getElementById('shareModal');
+    const closeBtn   = document.getElementById('shareModalClose');
+    const copyBtn    = document.getElementById('copyShareBtn');
+    if (shareBtn) shareBtn.addEventListener('click', () => { shareModal.style.display = 'flex'; });
+    if (closeBtn) closeBtn.addEventListener('click', () => { shareModal.style.display = 'none'; });
+    if (shareModal) shareModal.addEventListener('click', (e) => {
+      if (e.target === e.currentTarget) e.currentTarget.style.display = 'none';
+    });
+    if (copyBtn) copyBtn.addEventListener('click', () => {
+      const inp = document.getElementById('shareUrlInput');
+      navigator.clipboard?.writeText(inp.value)
+        .then(() => toast('Link copied!', 'success'))
+        .catch(() => { inp.select(); document.execCommand('copy'); toast('Link copied!', 'success'); });
+    });
+  })();
+  {% endif %}
+  </script>
+</body>
+</html>

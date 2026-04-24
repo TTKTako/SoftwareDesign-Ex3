@@ -1,13 +1,17 @@
 import json
 from datetime import timedelta
 
+import requests as http_client
+
 from django.conf import settings
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.decorators import login_required
-from django.http import Http404, JsonResponse
-from django.shortcuts import get_object_or_404
+from django.db import transaction
+from django.http import Http404, JsonResponse, StreamingHttpResponse
+from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
+from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_POST, require_http_methods
 
 from .generation import SongGenerationRequest, get_generator_strategy
@@ -15,14 +19,32 @@ from .models import GenerationJob, Library, Lyrics, Metadata, SharedLink, Song, 
 
 
 # ---------------------------------------------------------------------------
-# Library view — READ (list all songs for the authenticated user)
+# Library page — HTML (own page with Prompt AI sidebar, FR-3.3)
 # ---------------------------------------------------------------------------
 
 @login_required
+@ensure_csrf_cookie
 def library_view(request):
-    """Return the authenticated user's library and song list as JSON."""
+    """GET /library/ — render the library HTML page."""
     library, _ = Library.objects.get_or_create(owner=request.user)
-    songs = library.songs.filter(status=Song.Status.COMPLETED).select_related("metadata")
+    return render(request, 'music/library.html', {
+        'username': request.user.username,
+        'is_full': library.is_full,
+        'song_count': library.songs.filter(status=Song.Status.COMPLETED).count(),
+    })
+
+
+# ---------------------------------------------------------------------------
+# Library API — JSON (list all songs for the authenticated user)
+# ---------------------------------------------------------------------------
+
+@login_required
+def library_api_view(request):
+    """GET /library/api/ — return the authenticated user's library as JSON."""
+    library, _ = Library.objects.get_or_create(owner=request.user)
+    songs = library.songs.filter(status=Song.Status.COMPLETED).select_related(
+        "metadata", "voice_style"
+    )
     data = {
         "owner": request.user.username,
         "song_count": songs.count(),
@@ -31,6 +53,8 @@ def library_view(request):
             {
                 "id": s.pk,
                 "title": s.metadata.title if hasattr(s, "metadata") else "(untitled)",
+                "mood": s.metadata.mood if hasattr(s, "metadata") else "",
+                "voice_style": s.voice_style.style if hasattr(s, "voice_style") else "",
                 "status": s.status,
                 "is_private": s.is_private,
                 "created_at": s.created_at.isoformat(),
@@ -71,6 +95,13 @@ def song_detail_view(request, pk):
             "mode": song.lyrics.mode,
             "content": song.lyrics.content,
         }
+    # Include audio_url for the owner (used by the in-app player)
+    audio_url: str | None = None
+    if hasattr(song, "generation_job") and song.generation_job.audio_url:
+        audio_url = song.generation_job.audio_url
+    elif song.audio_file:
+        audio_url = request.build_absolute_uri(song.audio_file.url)
+    data["audio_url"] = audio_url
     return JsonResponse(data)
 
 
@@ -80,38 +111,43 @@ def song_detail_view(request, pk):
 
 def shared_link_view(request, token):
     """
-    Public page for a shared song link.
-    - Guests: see metadata only.
-    - Authenticated users: see metadata + audio file URL.
+    Public HTML page for a shared song link.
+    Possessing the token grants metadata access regardless of is_private.
+    - Guests: see song metadata only, prompted to log in to listen.
+    - Authenticated users: see metadata + audio player.
     FR-5.3: must require login to stream audio.
     """
     link = get_object_or_404(SharedLink, token=token)
     song = link.song
 
-    if song.is_private and not (
-        request.user.is_authenticated and song.library.owner == request.user
-    ):
-        # A private song with no shared-link access for this visitor
-        raise Http404("Song not found.")
+    meta = song.metadata if hasattr(song, "metadata") else None
+    voice = song.voice_style if hasattr(song, "voice_style") else None
+    lyrics = song.lyrics if hasattr(song, "lyrics") else None
 
-    data: dict = {}
-    if hasattr(song, "metadata"):
-        m = song.metadata
-        data["title"] = m.title
-        data["mood"] = m.mood
-        data["theme"] = m.theme
-        data["occasion"] = m.occasion
-
+    # Audio URL: prefer external generation URL, fall back to local file.
+    # Only expose to authenticated users (FR-5.3).
+    audio_url: str | None = None
     if request.user.is_authenticated:
-        # Authenticated users can receive the audio URL
-        data["audio_url"] = (
-            song.audio_file.url if song.audio_file else None
-        )
-    else:
-        data["audio_url"] = None
-        data["message"] = "Log in to listen to this track."
+        if hasattr(song, "generation_job") and song.generation_job.audio_url:
+            audio_url = song.generation_job.audio_url
+        elif song.audio_file:
+            audio_url = request.build_absolute_uri(song.audio_file.url)
 
-    return JsonResponse(data)
+    is_owner = (
+        request.user.is_authenticated
+        and song.library.owner == request.user
+    )
+
+    ctx = {
+        "song": song,
+        "meta": meta,
+        "voice": voice,
+        "lyrics": lyrics,
+        "audio_url": audio_url,
+        "is_owner": is_owner,
+        "login_url": reverse("music:login"),
+    }
+    return render(request, "music/share.html", ctx)
 
 
 # ---------------------------------------------------------------------------
@@ -156,13 +192,18 @@ def generate_song_view(request):
         )
 
     # --- Validate enumerated fields against model choices ---
-    mood = body.get("mood", Metadata.Mood.CALM)
-    if mood not in Metadata.Mood.values:
-        return JsonResponse({"error": f"Invalid mood '{mood}'."}, status=400)
+    # Mood and occasion accept either a preset enum value OR any custom free-text (≤ 40 chars).
+    mood = (body.get("mood") or "").strip()
+    if not mood:
+        mood = Metadata.Mood.CALM
+    elif len(mood) > 40:
+        return JsonResponse({"error": "Mood is too long (max 40 characters)."}, status=400)
 
-    occasion = body.get("occasion", Metadata.Occasion.GENERAL)
-    if occasion not in Metadata.Occasion.values:
-        return JsonResponse({"error": f"Invalid occasion '{occasion}'."}, status=400)
+    occasion = (body.get("occasion") or "").strip()
+    if not occasion:
+        occasion = Metadata.Occasion.GENERAL
+    elif len(occasion) > 40:
+        return JsonResponse({"error": "Occasion is too long (max 40 characters)."}, status=400)
 
     voice_style = body.get("voice_style", VoiceStyle.Style.FEMALE)
     if voice_style not in VoiceStyle.Style.values:
@@ -173,19 +214,21 @@ def generate_song_view(request):
         return JsonResponse({"error": f"Invalid lyrics_mode '{lyrics_mode}'."}, status=400)
 
     lyrics_content: str = body.get("lyrics_content", "")
-    theme: str = body.get("theme", "")
+    # Use `or ""` to convert JSON null to empty string (CharField cannot store NULL).
+    theme: str = (body.get("theme") or "").strip()
 
-    # --- Persist domain objects ---
-    song = Song.objects.create(library=library, status=Song.Status.PENDING)
-    Metadata.objects.create(
-        song=song,
-        title=title,
-        mood=mood,
-        theme=theme,
-        occasion=occasion,
-    )
-    VoiceStyle.objects.create(song=song, style=voice_style)
-    Lyrics.objects.create(song=song, mode=lyrics_mode, content=lyrics_content)
+    # --- Persist domain objects (atomic: all-or-nothing) ---
+    with transaction.atomic():
+        song = Song.objects.create(library=library, status=Song.Status.PENDING)
+        Metadata.objects.create(
+            song=song,
+            title=title,
+            mood=mood,
+            theme=theme,
+            occasion=occasion,
+        )
+        VoiceStyle.objects.create(song=song, style=voice_style)
+        Lyrics.objects.create(song=song, mode=lyrics_mode, content=lyrics_content)
 
     # --- Build generation request and invoke strategy ---
     gen_request = SongGenerationRequest(
@@ -201,11 +244,20 @@ def generate_song_view(request):
     try:
         strategy = get_generator_strategy(strategy_name)
     except ValueError as exc:
-        song.status = Song.Status.FAILED
-        song.save()
+        song.delete()
         return JsonResponse({"error": str(exc)}, status=500)
 
-    result = strategy.generate(gen_request)
+    try:
+        result = strategy.generate(gen_request)
+    except Exception as exc:
+        song.delete()
+        return JsonResponse({"error": f"Generation request failed: {exc}"}, status=500)
+
+    # If the strategy fails immediately (e.g. invalid API key, bad response),
+    # remove the song so it doesn't accumulate as an orphaned FAILED record.
+    if result.status == "FAILED":
+        song.delete()
+        return JsonResponse({"error": result.error or "Song generation failed."}, status=400)
 
     # --- Persist job record ---
     job = GenerationJob.objects.create(
@@ -220,8 +272,6 @@ def generate_song_view(request):
     # --- Sync Song.status with the initial result ---
     if result.status == "SUCCESS":
         song.status = Song.Status.COMPLETED
-    elif result.status == "FAILED":
-        song.status = Song.Status.FAILED
     else:
         song.status = Song.Status.GENERATING
     song.save()
@@ -265,12 +315,21 @@ def generation_status_view(request, pk):
 
     # Terminal states need no further polling.
     if job.status in ("SUCCESS", "FAILED"):
+        # Reconcile song.status in case a previous song.save() failed while
+        # job.save() had already committed (atomicity bug from prior code path).
+        expected_song_status = (
+            Song.Status.COMPLETED if job.status == "SUCCESS" else Song.Status.FAILED
+        )
+        if song.status != expected_song_status:
+            song.status = expected_song_status
+            song.save()
         return JsonResponse(
             {
                 "song_id": song.pk,
                 "task_id": job.task_id,
                 "status": job.status,
                 "audio_url": job.audio_url or None,
+                "error_message": job.error_message or None,
                 "song_status": song.status,
             }
         )
@@ -289,7 +348,7 @@ def generation_status_view(request, pk):
                 "song_id": song.pk,
                 "task_id": job.task_id,
                 "status": "FAILED",
-                "error": job.error_message,
+                "error_message": job.error_message,
                 "audio_url": None,
                 "song_status": song.status,
             }
@@ -303,21 +362,22 @@ def generation_status_view(request, pk):
 
     result = strategy.get_status(job.task_id)
 
-    # Persist any changes.
+    # Persist any changes atomically so job and song status are always in sync.
     if result.status != job.status:
-        job.status = result.status
-        if result.audio_url:
-            job.audio_url = result.audio_url
-        if result.error:
-            job.error_message = result.error
-        job.save()
+        with transaction.atomic():
+            job.status = result.status
+            if result.audio_url:
+                job.audio_url = result.audio_url
+            if result.error:
+                job.error_message = result.error
+            job.save()
 
-        if result.status == "SUCCESS":
-            song.status = Song.Status.COMPLETED
-            song.save()
-        elif result.status == "FAILED":
-            song.status = Song.Status.FAILED
-            song.save()
+            if result.status == "SUCCESS":
+                song.status = Song.Status.COMPLETED
+                song.save()
+            elif result.status == "FAILED":
+                song.status = Song.Status.FAILED
+                song.save()
 
     return JsonResponse(
         {
@@ -325,31 +385,128 @@ def generation_status_view(request, pk):
             "task_id": job.task_id,
             "status": job.status,
             "audio_url": job.audio_url or None,
+            "error_message": job.error_message or None,
             "song_status": song.status,
         }
     )
 
 
 # ---------------------------------------------------------------------------
+# Suno webhook callback — UPDATE (Strategy Pattern: async result delivery)
+# ---------------------------------------------------------------------------
+
+from django.views.decorators.csrf import csrf_exempt  # noqa: E402
+
+
+@csrf_exempt
+@require_POST
+def suno_callback_view(request):
+    """
+    POST /suno/callback/
+
+    Suno calls this endpoint when a generation task finishes (or fails).
+    We update the GenerationJob and Song status from the payload so that
+    the next poll from the browser returns the final state immediately.
+
+    The endpoint is CSRF-exempt because Suno is an external service.
+    No sensitive state is modified without a valid taskId that maps to an
+    existing GenerationJob, so there is no meaningful CSRF risk here.
+
+    Expected payload (Suno V1 callback):
+    {
+        "taskId": "<task id>",
+        "status": "SUCCESS" | "FAILED",
+        "data": [ { "audio_url": "...", ... } ]   // present on SUCCESS
+    }
+    """
+    try:
+        body: dict = json.loads(request.body)
+    except (json.JSONDecodeError, ValueError):
+        return JsonResponse({"error": "Invalid JSON."}, status=400)
+
+    # SunoAPI.org v1 callback format:
+    # {
+    #   "code": 200,
+    #   "msg": "All generated successfully.",
+    #   "data": {
+    #     "callbackType": "complete" | "first" | "text" | "error",
+    #     "task_id": "<task id>",
+    #     "data": [ { "audio_url": "...", ... } ]   // present on SUCCESS
+    #   }
+    # }
+    code: int = body.get("code", 0)
+    data_block: dict = body.get("data") or {}
+    task_id: str = (data_block.get("task_id") or "").strip()
+    callback_type: str = (data_block.get("callbackType") or "").strip().lower()
+
+    if not task_id:
+        return JsonResponse({"ok": True})  # Unknown payload — ignore silently
+
+    # Map callbackType + code to internal status
+    if code != 200 or callback_type == "error":
+        status = "FAILED"
+    elif callback_type == "complete":
+        status = "SUCCESS"
+    elif callback_type == "first":
+        status = "FIRST_SUCCESS"
+    elif callback_type == "text":
+        status = "TEXT_SUCCESS"
+    else:
+        return JsonResponse({"ok": True})  # Unknown callbackType — ignore silently
+
+    try:
+        job = GenerationJob.objects.select_related("song").get(task_id=task_id)
+    except GenerationJob.DoesNotExist:
+        return JsonResponse({"ok": True})  # Unknown task — ignore silently
+
+    if job.status in ("SUCCESS", "FAILED"):
+        return JsonResponse({"ok": True})  # Already terminal — nothing to do
+
+    audio_url: str = ""
+    if status == "SUCCESS":
+        # Callback uses snake_case "audio_url" in data.data[]
+        tracks = data_block.get("data") or []
+        if isinstance(tracks, list) and tracks:
+            audio_url = tracks[0].get("audio_url", "")
+
+    with transaction.atomic():
+        job.status = status
+        if audio_url:
+            job.audio_url = audio_url
+        error_msg = data_block.get("errorMessage") or data_block.get("error") or ""
+        if error_msg:
+            job.error_message = error_msg
+        job.save()
+
+        # Only update Song for terminal states; intermediate states
+        # (TEXT_SUCCESS, FIRST_SUCCESS) leave the song in GENERATING.
+        song = job.song
+        if status == "SUCCESS":
+            song.status = Song.Status.COMPLETED
+            song.save()
+        elif status == "FAILED":
+            song.status = Song.Status.FAILED
+            song.save()
+
+    return JsonResponse({"ok": True})
+
+
+# ---------------------------------------------------------------------------
 # Local Account registration — CREATE (FR-1.3)
 # ---------------------------------------------------------------------------
 
-@require_POST
+@ensure_csrf_cookie
 def register_view(request):
     """
-    POST /auth/register/
-
-    Creates a new local user account.  No authentication required.
-
-    Request body:
-    {
-        "username":   "alice",
-        "password":   "s3cureP@ss",
-        "email":      "alice@example.com",
-        "first_name": "Alice",         // optional
-        "last_name":  "Smith"          // optional
-    }
-    """
+    GET  /auth/register/  → render register page
+    POST /auth/register/  → create account (JSON API)
+    """    
+    if request.method == 'GET':
+        if request.user.is_authenticated:
+            return redirect('/')
+        return render(request, 'music/register.html')
+    if request.method != 'POST':
+        return JsonResponse({'error': 'Method not allowed.'}, status=405)
     try:
         body: dict = json.loads(request.body)
     except json.JSONDecodeError:
@@ -380,6 +537,9 @@ def register_view(request):
         first_name=first_name,
         last_name=last_name,
     )
+    # FR-1.3: auto sign-in immediately after registration
+    # Specify backend explicitly — multiple backends are configured (allauth)
+    login(request, user, backend='django.contrib.auth.backends.ModelBackend')
     return JsonResponse(
         {
             "id": user.pk,
@@ -396,22 +556,21 @@ def register_view(request):
 # Local Account login — SESSION CREATE (FR-1.1)
 # ---------------------------------------------------------------------------
 
-@require_POST
+@ensure_csrf_cookie
 def login_view(request):
     """
-    POST /auth/login/
+    GET  /auth/login/  → render login page
+    POST /auth/login/  → authenticate session (JSON API)
 
-    Authenticates a local user and establishes a session.
-
-    Request body:
-    {
-        "username": "alice",
-        "password": "s3cureP@ss"
-    }
-
-    For Google OAuth, use the allauth headless endpoint instead:
+    For Google OAuth, use the allauth headless endpoint:
       POST /_allauth/browser/v1/auth/provider/token
-    """
+    """    
+    if request.method == 'GET':
+        if request.user.is_authenticated:
+            return redirect('/')
+        return render(request, 'music/login.html')
+    if request.method != 'POST':
+        return JsonResponse({'error': 'Method not allowed.'}, status=405)
     try:
         body: dict = json.loads(request.body)
     except json.JSONDecodeError:
@@ -515,36 +674,68 @@ def download_song_view(request, pk):
     """
     GET /songs/<pk>/download/
 
-    Returns the audio download URL for the given song.  Only the owner may
-    access this endpoint (FR-5.3: private songs protected from direct URL access).
-
-    The client should use the returned ``download_url`` to trigger the browser
-    download dialog (e.g., via an <a download> element or fetch + Blob URL).
+    Streams the audio file as a download attachment so the browser saves it
+    regardless of whether the source is a local file or a remote Suno CDN URL.
+    Only the owner may download (FR-5.3).
     """
     song = get_object_or_404(Song, pk=pk, library__owner=request.user)
+    title: str = song.metadata.title if hasattr(song, "metadata") else f"song-{pk}"
+    safe_title = "".join(c for c in title if c.isalnum() or c in " -_").strip() or f"song-{pk}"
 
-    audio_url: str | None = None
-
-    # Prefer the URL stored on the GenerationJob (set by the strategy)
+    # ── Remote URL from Suno (proxy-stream so browser gets a real download) ──
     if hasattr(song, "generation_job") and song.generation_job.audio_url:
-        audio_url = song.generation_job.audio_url
+        remote_url = song.generation_job.audio_url
+        try:
+            upstream = http_client.get(remote_url, stream=True, timeout=30)
+            upstream.raise_for_status()
+        except http_client.RequestException as exc:
+            return JsonResponse(
+                {"error": f"Could not retrieve audio from Suno: {exc}"},
+                status=502,
+            )
+        content_type = upstream.headers.get("Content-Type", "audio/mpeg")
+        response = StreamingHttpResponse(
+            upstream.iter_content(chunk_size=8192),
+            content_type=content_type,
+        )
+        response["Content-Disposition"] = f'attachment; filename="{safe_title}.mp3"'
+        return response
 
-    # Fall back to a locally uploaded file
-    if not audio_url and song.audio_file:
-        audio_url = request.build_absolute_uri(song.audio_file.url)
-
-    if not audio_url:
-        return JsonResponse(
-            {"error": "No audio file is available for this song yet."},
-            status=404,
+    # ── Local uploaded file ──
+    if song.audio_file:
+        from django.http import FileResponse
+        return FileResponse(
+            song.audio_file.open("rb"),
+            as_attachment=True,
+            filename=f"{safe_title}.mp3",
         )
 
-    title: str = song.metadata.title if hasattr(song, "metadata") else f"song-{pk}"
     return JsonResponse(
-        {
-            "song_id": pk,
-            "title": title,
-            "download_url": audio_url,
-        }
+        {"error": "No audio file is available for this song yet."},
+        status=404,
     )
+
+
+# ---------------------------------------------------------------------------
+# Main application page — entry point for the SPA (FR-1.4)
+# ---------------------------------------------------------------------------
+
+@login_required
+@ensure_csrf_cookie
+def app_view(request):
+    """
+    GET /  — renders the single-page application shell.
+
+    Passes the current user's username and library status to the template so
+    the JS can bootstrap without an extra API round-trip.
+    All subsequent data (library, generate, delete, share) is fetched via the
+    JSON endpoints by main.js.
+    """
+    library, _ = Library.objects.get_or_create(owner=request.user)
+    return render(request, 'music/app.html', {
+        'username': request.user.username,
+        'is_full': library.is_full,
+        'song_count': library.songs.filter(status=Song.Status.COMPLETED).count(),
+    })
+
 

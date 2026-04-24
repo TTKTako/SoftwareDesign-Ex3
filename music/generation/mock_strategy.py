@@ -9,10 +9,6 @@ import uuid
 
 from .base import SongGenerationRequest, SongGenerationResult, SongGeneratorStrategy
 
-# A stable public MP3 that is safe to use as a placeholder in tests / demos.
-_MOCK_AUDIO_URL = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3"
-
-
 class MockSongGeneratorStrategy(SongGeneratorStrategy):
     """
     Concrete Strategy: Mock generator.
@@ -35,7 +31,6 @@ class MockSongGeneratorStrategy(SongGeneratorStrategy):
         return SongGenerationResult(
             task_id=task_id,
             status="SUCCESS",
-            audio_url=_MOCK_AUDIO_URL,
         )
 
     def get_status(self, task_id: str) -> SongGenerationResult:
@@ -54,5 +49,4 @@ class MockSongGeneratorStrategy(SongGeneratorStrategy):
         return SongGenerationResult(
             task_id=task_id,
             status="SUCCESS",
-            audio_url=_MOCK_AUDIO_URL,
         )

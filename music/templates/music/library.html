@@ -1,0 +1,319 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cithara — Library</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap">
+  <link rel="stylesheet" href="{% static 'music/css/main.css' %}">
+</head>
+<body class="app-page">
+
+  <!-- ─── Top navigation bar ─────────────────────────────────────── -->
+  <header class="topbar">
+    <div class="topbar-logo">
+      <svg width="22" height="22" viewBox="0 0 32 32" fill="none">
+        <circle cx="16" cy="16" r="14" stroke="#f5c518" stroke-width="2"/>
+        <path d="M12 10v12M16 8v16M20 12v8" stroke="#f5c518" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+      <span>Cithara</span>
+    </div>
+    <div class="topbar-right">
+      <a class="btn-ghost btn-sm topbar-nav-link" href="/">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+          <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        Generate
+      </a>
+      <span class="topbar-user">{{ username }}</span>
+      <button class="btn-ghost btn-sm" id="logoutBtn">Sign out</button>
+    </div>
+  </header>
+
+  <!-- ─── Library layout: left sidebar (1/3) + main content (2/3) ── -->
+  <div class="lib-layout">
+
+    <!-- ── Left sidebar: Prompt AI (1/3) ───────────────────────── -->
+    <aside class="lib-sidebar">
+
+      <div class="lib-sidebar-header">
+        <div class="lib-sidebar-title">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+            <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          Prompt AI
+        </div>
+        <span class="library-count" id="libraryCount">{{ song_count }}/20</span>
+      </div>
+
+      <!-- Library full warning -->
+      <div class="alert alert-warning" id="libraryFullAlert" {% if not is_full %}style="display:none"{% endif %}>
+        Library is full (20/20). Delete a song to create more.
+      </div>
+
+      <form id="generateForm" autocomplete="off">
+
+        <div class="field-group compact field-group-gap">
+          <input class="field-input" id="genTitle" name="title" type="text"
+                 placeholder="Song title…" required maxlength="80">
+        </div>
+
+        <!-- Mood chips -->
+        <div class="field-group compact">
+          <label class="field-label-sm">Mood</label>
+          <div class="chip-group" id="moodChips">
+            <button type="button" class="chip chip-active" data-value="happy">Happy</button>
+            <button type="button" class="chip" data-value="sad">Sad</button>
+            <button type="button" class="chip" data-value="calm">Calm</button>
+            <button type="button" class="chip" data-value="energetic">Energetic</button>
+            <button type="button" class="chip" data-value="romantic">Romantic</button>
+            <button type="button" class="chip" data-value="angry">Angry</button>
+            <button type="button" class="chip" data-value="melancholic">Melancholic</button>
+          </div>
+          <input class="field-input chip-custom-input" id="moodCustom"
+                 placeholder="+ custom mood…" maxlength="40" autocomplete="off">
+        </div>
+
+        <!-- Occasion chips -->
+        <div class="field-group compact">
+          <label class="field-label-sm">Occasion</label>
+          <div class="chip-group" id="occasionChips">
+            <button type="button" class="chip chip-active" data-value="general">General</button>
+            <button type="button" class="chip" data-value="birthday">Birthday</button>
+            <button type="button" class="chip" data-value="wedding">Wedding</button>
+            <button type="button" class="chip" data-value="party">Party</button>
+            <button type="button" class="chip" data-value="relaxation">Relaxation</button>
+            <button type="button" class="chip" data-value="workout">Workout</button>
+          </div>
+          <input class="field-input chip-custom-input" id="occasionCustom"
+                 placeholder="+ custom occasion…" maxlength="40" autocomplete="off">
+        </div>
+
+        <!-- Theme -->
+        <div class="field-group compact field-group-gap">
+          <input class="field-input" id="genTheme" name="theme" type="text"
+                 placeholder="Theme / description…" maxlength="255">
+        </div>
+
+        <!-- Voice style -->
+        <div class="field-group compact">
+          <label class="field-label-sm">Voice</label>
+          <div class="chip-group" id="voiceChips">
+            <button type="button" class="chip" data-value="male">Male</button>
+            <button type="button" class="chip chip-active" data-value="female">Female</button>
+            <button type="button" class="chip" data-value="robotic">Robotic</button>
+            <button type="button" class="chip" data-value="duet">Duet</button>
+          </div>
+        </div>
+
+        <!-- Lyrics mode -->
+        <div class="field-group compact">
+          <label class="field-label-sm">Lyrics</label>
+          <div class="toggle-group" id="lyricsModeToggle">
+            <button type="button" class="toggle-btn" data-value="ai_generated">AI</button>
+            <button type="button" class="toggle-btn toggle-btn-active" data-value="instrumental">Instrumental</button>
+            <button type="button" class="toggle-btn" data-value="custom">Custom</button>
+          </div>
+        </div>
+
+        <!-- Custom lyrics textarea (conditional) -->
+        <div class="field-group compact field-group-gap" id="lyricsContentField" style="display:none">
+          <textarea class="field-input field-textarea" id="genLyrics" name="lyrics_content"
+                    placeholder="Enter your lyrics here…" rows="4"></textarea>
+        </div>
+
+        <!-- Generate button -->
+        <button class="btn-generate" type="submit" id="generateBtn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+            <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span class="generate-btn-text">Generate</span>
+          <span class="generate-btn-spinner" style="display:none">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" class="spinner-icon">
+              <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" stroke-dasharray="31.4" stroke-dashoffset="10"/>
+            </svg>
+            Generating…
+          </span>
+        </button>
+
+        <!-- Generation status message -->
+        <div class="gen-status" id="genStatus"></div>
+
+      </form>
+    </aside>
+
+    <!-- ── Main area: songs + detail view (2/3) ──────────────────── -->
+    <main class="lib-main" id="libMain">
+
+      <!-- Empty state — shown when no songs -->
+      <div class="lib-empty" id="libEmpty" style="display:none">
+        <div class="lib-empty-visual">
+          <div class="hero-ring hero-ring-1"></div>
+          <div class="hero-ring hero-ring-2"></div>
+          <div class="hero-ring hero-ring-3"></div>
+          <div class="hero-icon">
+            <svg width="36" height="36" viewBox="0 0 32 32" fill="none">
+              <circle cx="16" cy="16" r="14" stroke="#f5c518" stroke-width="1.5"/>
+              <path d="M12 10v12M16 8v16M20 12v8" stroke="#f5c518" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+          </div>
+        </div>
+        <h2 class="lib-empty-title">Your library is empty</h2>
+        <p class="lib-empty-sub">Use Prompt AI on the left to generate your first track.</p>
+      </div>
+
+      <!-- Song list grid — shown when songs exist -->
+      <div class="lib-songs-area" id="libSongsArea" style="display:none">
+        <h2 class="lib-page-title">Your Library</h2>
+        <div class="lib-song-grid" id="libSongGrid">
+          <!-- Loading spinner -->
+          <div class="song-list-loading" id="libLoading">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" class="spinner-icon">
+              <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" stroke-dasharray="31.4" stroke-dashoffset="10"/>
+            </svg>
+          </div>
+        </div>
+      </div>
+
+      <!-- Song detail panel — shown when a song is clicked -->
+      <div class="song-detail lib-song-detail" id="songDetail" style="display:none">
+
+        <!-- Back button -->
+        <button class="btn-ghost btn-sm lib-back-btn" id="libBackBtn">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+            <path d="M19 12H5M12 19l-7-7 7-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          Back to Library
+        </button>
+
+        <!-- Artwork -->
+        <div class="detail-artwork-wrap">
+          <div class="detail-artwork" id="detailArtwork">
+            <div class="artwork-visual">
+              <svg class="artwork-icon" width="64" height="64" viewBox="0 0 24 24" fill="none">
+                <circle cx="12" cy="12" r="3" fill="currentColor"/>
+                <path d="M12 2v3M12 19v3M4.22 4.22l2.12 2.12M17.66 17.66l2.12 2.12M2 12h3M19 12h3M4.22 19.78l2.12-2.12M17.66 6.34l2.12-2.12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              </svg>
+            </div>
+          </div>
+          <div class="detail-actions">
+            <button class="btn-outline btn-sm" id="detailShareBtn">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+                <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8M16 6l-4-4-4 4M12 2v13" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              Share
+            </button>
+            <button class="btn-outline btn-sm" id="detailDownloadBtn">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              Download
+            </button>
+            <button class="btn-outline btn-sm btn-delete-song" id="detailDeleteBtn">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+                <polyline points="3 6 5 6 21 6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M19 6l-1 14H6L5 6M10 11v6M14 11v6M9 6V4h6v2" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              Delete
+            </button>
+          </div>
+        </div>
+
+        <!-- Info panel -->
+        <div class="detail-info">
+          <div class="detail-header">
+            <h1 class="detail-title" id="detailTitle">—</h1>
+            <div class="detail-tags" id="detailTags"></div>
+          </div>
+          <div class="detail-meta-grid" id="detailMeta"></div>
+          <div class="detail-lyrics-section" id="detailLyricsSection" style="display:none">
+            <h3 class="detail-section-label">Lyrics</h3>
+            <pre class="detail-lyrics" id="detailLyrics"></pre>
+          </div>
+
+          <!-- Inline audio player — visible when the song has an audio URL -->
+          <div class="detail-player-section" id="detailPlayerSection" style="display:none">
+            <h3 class="detail-section-label">Listen</h3>
+            <div class="detail-inline-player">
+              <button class="detail-inline-play-btn" id="detailInlinePlayBtn" title="Play / Pause">
+                <svg class="icon-play" width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                <svg class="icon-pause" width="22" height="22" viewBox="0 0 24 24" fill="currentColor" style="display:none"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+              </button>
+              <div class="detail-inline-progress-wrap">
+                <input type="range" class="detail-inline-slider" id="detailInlineSlider" value="0" min="0" max="100" step="0.1">
+                <div class="detail-inline-times">
+                  <span id="detailInlineTime">0:00</span>
+                  <span id="detailInlineDur">0:00</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div><!-- /song-detail -->
+    </main>
+
+  </div><!-- /lib-layout -->
+
+  <!-- ─── Bottom music player ─────────────────────────────────────── -->
+  <div class="player-bar" id="playerBar" style="display:none">
+    <div class="player-left">
+      <div class="player-artwork" id="playerArtwork"></div>
+      <div class="player-info">
+        <div class="player-title" id="playerTitle">—</div>
+        <div class="player-meta" id="playerMeta"></div>
+      </div>
+    </div>
+    <div class="player-center">
+      <div class="player-controls">
+        <button class="player-btn" id="playerPlayBtn" title="Play / Pause">
+          <svg class="icon-play" width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+          <svg class="icon-pause" width="20" height="20" viewBox="0 0 24 24" fill="currentColor" style="display:none"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+        </button>
+      </div>
+      <div class="player-progress-row">
+        <span class="player-time" id="playerTime">0:00</span>
+        <input type="range" class="progress-slider" id="progressSlider" value="0" min="0" max="100" step="0.1">
+        <span class="player-duration" id="playerDuration">0:00</span>
+      </div>
+    </div>
+    <div class="player-right">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" style="color:#888">
+        <path d="M11 5L6 9H2v6h4l5 4V5zM19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+      <input type="range" class="volume-slider" id="volumeSlider" value="80" min="0" max="100">
+    </div>
+  </div>
+
+  <!-- ─── Toast notifications ──────────────────────────────────────── -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <!-- Share modal -->
+  <div class="modal-overlay" id="shareModal" style="display:none">
+    <div class="modal">
+      <button class="modal-close" id="shareModalClose">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+          <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+      </button>
+      <h3 class="modal-title">Share Link</h3>
+      <p class="modal-sub">Anyone with this link can view song info. Login required to listen.</p>
+      <div class="share-url-row">
+        <input class="field-input" id="shareUrlInput" type="text" readonly>
+        <button class="btn-primary btn-sm" id="copyShareBtn">Copy</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    window.CITHARA = {
+      page: 'library',
+      username: "{{ username }}",
+      isLibraryFull: {{ is_full|yesno:"true,false" }},
+      songCount: {{ song_count }},
+    };
+  </script>
+  <script src="{% static 'music/js/main.js' %}"></script>
+</body>
+</html>

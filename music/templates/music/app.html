@@ -1,0 +1,179 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cithara — Generate</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap">
+  <link rel="stylesheet" href="{% static 'music/css/main.css' %}">
+</head>
+<body class="app-page">
+
+  <!-- ─── Top navigation bar ─────────────────────────────────────── -->
+  <header class="topbar">
+    <div class="topbar-logo">
+      <svg width="22" height="22" viewBox="0 0 32 32" fill="none">
+        <circle cx="16" cy="16" r="14" stroke="#f5c518" stroke-width="2"/>
+        <path d="M12 10v12M16 8v16M20 12v8" stroke="#f5c518" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+      <span>Cithara</span>
+    </div>
+    <div class="topbar-right">
+      <a class="btn-ghost btn-sm topbar-nav-link" href="/library/">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+          <path d="M3 3h4v4H3zM3 10h4v4H3zM3 17h4v4H3zM10 3h11v4H10zM10 10h11v4H10zM10 17h11v4H10z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        Library
+        <span class="topbar-song-count">{{ song_count }}/20</span>
+      </a>
+      <span class="topbar-user">{{ username }}</span>
+      <button class="btn-ghost btn-sm" id="logoutBtn">Sign out</button>
+    </div>
+  </header>
+
+  <!-- ─── Landing page: centered Prompt AI ───────────────────────── -->
+  <main class="landing-main">
+
+    <!-- Ambient orbs (subtle, inside main so they don't overlap topbar) -->
+    <div class="landing-orb landing-orb-1"></div>
+    <div class="landing-orb landing-orb-2"></div>
+
+    <!-- Hero headline -->
+    <div class="landing-hero">
+      <div class="landing-hero-visual">
+        <div class="hero-ring hero-ring-1"></div>
+        <div class="hero-ring hero-ring-2"></div>
+        <div class="hero-ring hero-ring-3"></div>
+        <div class="hero-icon">
+          <svg width="36" height="36" viewBox="0 0 32 32" fill="none">
+            <circle cx="16" cy="16" r="14" stroke="#f5c518" stroke-width="1.5"/>
+            <path d="M12 10v12M16 8v16M20 12v8" stroke="#f5c518" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+        </div>
+      </div>
+      <h1 class="landing-title">What do you want to create?</h1>
+      <p class="landing-sub">Describe your song and let AI compose it for you.</p>
+    </div>
+
+    <!-- Library full warning -->
+    <div class="alert alert-warning landing-alert" id="libraryFullAlert" {% if not is_full %}style="display:none"{% endif %}>
+      Your library is full (20/20). <a href="/library/" class="auth-link">Go to Library</a> and delete a song to create more.
+    </div>
+
+    <!-- ── Generate form card ─────────────────────────────────────── -->
+    <div class="landing-card">
+
+      <form id="generateForm" autocomplete="off">
+
+        <!-- Title -->
+        <div class="field-group">
+          <input class="field-input landing-title-input" id="genTitle" name="title" type="text"
+                 placeholder="Song title…" required maxlength="80">
+        </div>
+
+        <div class="landing-form-grid">
+
+          <!-- Mood chips -->
+          <div class="field-group compact">
+            <label class="field-label-sm">Mood</label>
+            <div class="chip-group" id="moodChips">
+              <button type="button" class="chip chip-active" data-value="happy">Happy</button>
+              <button type="button" class="chip" data-value="sad">Sad</button>
+              <button type="button" class="chip" data-value="calm">Calm</button>
+              <button type="button" class="chip" data-value="energetic">Energetic</button>
+              <button type="button" class="chip" data-value="romantic">Romantic</button>
+              <button type="button" class="chip" data-value="angry">Angry</button>
+              <button type="button" class="chip" data-value="melancholic">Melancholic</button>
+            </div>
+            <input class="field-input chip-custom-input" id="moodCustom"
+                   placeholder="+ custom mood…" maxlength="40" autocomplete="off">
+          </div>
+
+          <!-- Occasion chips -->
+          <div class="field-group compact">
+            <label class="field-label-sm">Occasion</label>
+            <div class="chip-group" id="occasionChips">
+              <button type="button" class="chip chip-active" data-value="general">General</button>
+              <button type="button" class="chip" data-value="birthday">Birthday</button>
+              <button type="button" class="chip" data-value="wedding">Wedding</button>
+              <button type="button" class="chip" data-value="party">Party</button>
+              <button type="button" class="chip" data-value="relaxation">Relaxation</button>
+              <button type="button" class="chip" data-value="workout">Workout</button>
+            </div>
+            <input class="field-input chip-custom-input" id="occasionCustom"
+                   placeholder="+ custom occasion…" maxlength="40" autocomplete="off">
+          </div>
+
+          <!-- Voice style -->
+          <div class="field-group compact">
+            <label class="field-label-sm">Voice</label>
+            <div class="chip-group" id="voiceChips">
+              <button type="button" class="chip" data-value="male">Male</button>
+              <button type="button" class="chip chip-active" data-value="female">Female</button>
+              <button type="button" class="chip" data-value="robotic">Robotic</button>
+              <button type="button" class="chip" data-value="duet">Duet</button>
+            </div>
+          </div>
+
+          <!-- Lyrics mode -->
+          <div class="field-group compact">
+            <label class="field-label-sm">Lyrics</label>
+            <div class="toggle-group" id="lyricsModeToggle">
+              <button type="button" class="toggle-btn" data-value="ai_generated">AI</button>
+              <button type="button" class="toggle-btn toggle-btn-active" data-value="instrumental">Instrumental</button>
+              <button type="button" class="toggle-btn" data-value="custom">Custom</button>
+            </div>
+          </div>
+
+        </div><!-- /landing-form-grid -->
+
+        <!-- Theme -->
+        <div class="field-group field-group-gap">
+          <input class="field-input" id="genTheme" name="theme" type="text"
+                 placeholder="Theme / description… (optional)" maxlength="255">
+        </div>
+
+        <!-- Custom lyrics textarea (conditional) -->
+        <div class="field-group field-group-gap" id="lyricsContentField" style="display:none">
+          <textarea class="field-input field-textarea" id="genLyrics" name="lyrics_content"
+                    placeholder="Enter your lyrics here…" rows="4"></textarea>
+        </div>
+
+        <!-- Generate button -->
+        <button class="btn-generate btn-generate-landing field-group-gap" type="submit" id="generateBtn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+            <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span class="generate-btn-text">Generate</span>
+          <span class="generate-btn-spinner" style="display:none">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" class="spinner-icon">
+              <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" stroke-dasharray="31.4" stroke-dashoffset="10"/>
+            </svg>
+            Generating…
+          </span>
+        </button>
+
+        <!-- Status message -->
+        <div class="gen-status" id="genStatus"></div>
+
+      </form>
+    </div><!-- /landing-card -->
+
+  </main>
+
+  <!-- ─── Toast notifications ──────────────────────────────────────── -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <script>
+    window.CITHARA = {
+      page: 'app',
+      username: "{{ username }}",
+      isLibraryFull: {{ is_full|yesno:"true,false" }},
+      songCount: {{ song_count }},
+    };
+  </script>
+  <script src="{% static 'music/js/main.js' %}"></script>
+</body>
+</html>
