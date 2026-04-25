@@ -65,6 +65,72 @@ GOOGLE_CLIENT_SECRET=
 
 > **Never commit `.env` to version control.** It is git-ignored. Use `.env.example` as the committed template.
 
+---
+
+#### 4a. Generate a `SECRET_KEY`
+
+Django requires a long, unpredictable secret key. Run the following command to generate one and copy the output into your `.env`:
+
+```bash
+python -c "from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())"
+```
+
+Paste the printed value as:
+
+```env
+SECRET_KEY="<paste output here>"
+```
+
+---
+
+#### 4b. Get a Suno API key (`SUNO_API_KEY`)
+
+> Skip this step if you keep `GENERATOR_STRATEGY=mock` (the default). The mock strategy works fully offline without any API key.
+
+1. Go to **[https://sunoapi.org/api-key](https://sunoapi.org/api-key)** and sign in (or create an account).
+2. On the API Keys page, click **Generate new key**.
+3. Copy the key and paste it into your `.env`:
+
+```env
+GENERATOR_STRATEGY=suno
+SUNO_API_KEY=<your key here>
+```
+
+---
+
+#### 4c. Get Google OAuth credentials (`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`)
+
+> Skip this step if you only need local username/password login.
+
+1. Open the **[Google Cloud Console](https://console.cloud.google.com/)** and sign in.
+2. Create or select a project (**top-left project picker → New Project**).
+3. In the left sidebar go to **APIs & Services → OAuth consent screen**.
+   - Choose **External** user type and click **Create**.
+   - Fill in the required fields (App name, User support email, Developer contact).
+   - Click **Save and Continue** through the remaining steps.
+4. Go to **APIs & Services → Credentials** and click **+ Create Credentials → OAuth 2.0 Client ID**.
+5. Set **Application type** to **Web application**.
+6. Under **Authorised redirect URIs** add **all** of the following:
+   ```
+   http://127.0.0.1:8000/accounts/google/login/callback/
+   http://localhost:8000/accounts/google/login/callback/
+   ```
+   For a production deployment also add:
+   ```
+   https://<your-domain>/accounts/google/login/callback/
+   ```
+7. Click **Create**. A dialog shows your **Client ID** and **Client Secret**.
+8. Copy both values into your `.env`:
+
+```env
+GOOGLE_CLIENT_ID=<your client ID here>
+GOOGLE_CLIENT_SECRET=<your client secret here>
+```
+
+9. Back in the Django admin (`http://127.0.0.1:8000/admin/`), navigate to  
+   **Sites → Sites** and update the default entry so **Domain name** is `127.0.0.1:8000`.  
+   Then go to **Social Accounts → Social applications → Add** and create a Google provider entry pointing at that site using the same Client ID and Secret.
+
 ### 5. Apply migrations
 
 ```bash
